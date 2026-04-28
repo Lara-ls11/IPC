@@ -5,6 +5,8 @@ import { colors, radius, spacing } from "../theme";
 export default function DashboardScreen({ navigation }) {
   const { user, tasks, logout } = useApp();
   const pending = tasks.filter((task) => !task.completed).slice(0, 3);
+  const progress = user?.semesterProgress ?? 0;
+  const displayProgress = tasks.length === 0 ? 0 : progress;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 30 }}>
@@ -21,7 +23,7 @@ export default function DashboardScreen({ navigation }) {
       <View style={styles.progressCard}>
         <Text style={styles.progressTitle}>Semestre 2024.1</Text>
         <Text style={styles.caption}>Você está quase lá!</Text>
-        <Text style={styles.progressValue}>{user?.semesterProgress ?? 68}%</Text>
+        <Text style={styles.progressValue}>{displayProgress}%</Text>
       </View>
 
       <View style={styles.quickActions}>

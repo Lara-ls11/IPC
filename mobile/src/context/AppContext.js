@@ -24,7 +24,7 @@ export function AppProvider({ children }) {
       name: name.trim(),
       email: email.trim().toLowerCase(),
       password,
-      semesterProgress: 68,
+      semesterProgress: 0,
     };
     setUser(nextUser);
     await saveUser(nextUser);

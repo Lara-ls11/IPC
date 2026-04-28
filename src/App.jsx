@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import softStudyLogo from "../Captura de ecrã 2026-04-27, às 17.09.25.png";
-import softStudyWordmark from "../Captura de ecrã 2026-04-27, às 17.20.39.png";
+import softStudyLogo from "../LogoCompleto.png";
+import softStudyWordmark from "../Logosótexto.png";
 
 const STORAGE_KEY = "softstudy:web:v1";
 const ACCOUNTS_KEY = "softstudy:web:accounts:v1";
+const EMAILJS_API_URL = "https://api.emailjs.com/api/v1.0/email/send";
+const EMAILJS_SERVICE_ID = import.meta.env.VITE_EMAILJS_SERVICE_ID;
+const EMAILJS_TEMPLATE_ID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID;
+const EMAILJS_PUBLIC_KEY = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
 
 const initialState = {
   user: null,
@@ -15,6 +19,107 @@ const initialState = {
     textSize: 16,
   },
 };
+
+const universityOptions = [
+  "Universidade Aberta",
+  "Universidade dos Açores",
+  "Universidade do Algarve",
+  "Universidade de Aveiro",
+  "Universidade da Beira Interior",
+  "Universidade de Coimbra",
+  "Universidade de Évora",
+  "Universidade de Lisboa",
+  "Universidade da Madeira",
+  "Universidade do Minho",
+  "Universidade Nova de Lisboa",
+  "Universidade do Porto",
+  "Universidade de Trás-os-Montes e Alto Douro (UTAD)",
+  "ISCTE – Instituto Universitário de Lisboa",
+  "Universidade Autónoma de Lisboa Luís de Camões",
+  "Universidade Católica Portuguesa",
+  "Universidade da Maia (ISMAI)",
+  "Universidade Europeia",
+  "Universidade Lusófona (Lisboa e Porto)",
+  "Instituto Superior Miguel Torga",
+  "Instituto Politécnico de Beja",
+  "Instituto Politécnico de Bragança",
+  "Instituto Politécnico de Castelo Branco",
+  "Instituto Politécnico do Cávado e do Ave",
+  "Instituto Politécnico de Coimbra",
+  "Instituto Politécnico da Guarda",
+  "Instituto Politécnico de Leiria",
+  "Instituto Politécnico de Lisboa",
+  "Instituto Politécnico de Portalegre",
+  "Instituto Politécnico do Porto",
+  "Instituto Politécnico de Santarém",
+  "Instituto Politécnico de Setúbal",
+  "Instituto Politécnico de Tomar",
+  "Instituto Politécnico de Viana do Castelo",
+  "Instituto Politécnico de Viseu",
+  "Escola Superior de Enfermagem de Coimbra",
+  "Escola Superior de Enfermagem de Lisboa",
+  "Escola Superior de Enfermagem do Porto",
+  "Escola Náutica Infante D. Henrique",
+  "Escola Superior de Hotelaria e Turismo do Estoril",
+  "Instituto Politécnico da Lusofonia",
+  "Instituto Politécnico da Maia (IPMAIA)",
+  "Instituto Politécnico de Gestão e Tecnologia (ISLA Gaia)",
+  "Instituto Politécnico de Ciências da Saúde Norte (CESPU)",
+  "Instituto Politécnico de Ciências da Saúde Sul (CESPU)",
+  "Instituto Politécnico de Saúde do Norte (IPSN)",
+  "Instituto Politécnico de Saúde do Sul (IPSS)",
+];
+const courseOptions = [
+  "Engenharia Informática",
+  "Ciência de Dados",
+  "Engenharia de Telecomunicações",
+  "Informática de Gestão",
+  "Gestão",
+  "Economia",
+  "Contabilidade e Finanças",
+  "Marketing",
+  "Recursos Humanos",
+  "Psicologia",
+  "Sociologia",
+  "Serviço Social",
+  "Ciência Política",
+  "Relações Internacionais",
+  "Engenharia Mecânica",
+  "Engenharia Eletrotécnica",
+  "Engenharia Civil",
+  "Engenharia Biomédica",
+  "Engenharia Química",
+  "Medicina",
+  "Enfermagem",
+  "Ciências Farmacêuticas",
+  "Nutrição",
+  "Tecnologias de Informação",
+  "Automação e Robótica",
+  "Contabilidade",
+  "Comércio e Negócios Internacionais",
+  "Fisioterapia",
+  "Farmácia",
+  "Radiologia",
+  "Dietética e Nutrição",
+  "Educação Básica",
+  "Educação Social",
+  "Animação Sociocultural",
+  "Fotografia",
+  "Teatro",
+  "Comunicação Social",
+  "Turismo",
+  "Gestão Hoteleira",
+  "Guias de Natureza",
+  "Arquitetura",
+  "Design",
+];
+const yearOptions = [
+  "1.º Ano",
+  "2.º Ano",
+  "3.º Ano",
+  "4.º Ano",
+  "5.º Ano",
+];
 
 function formatDateLabel(date) {
   const today = new Date();
@@ -44,7 +149,12 @@ function App() {
     email: "",
     password: "",
     confirmPassword: "",
+    verificationCode: "",
+    university: universityOptions[0],
+    course: courseOptions[0],
+    year: yearOptions[0],
   });
+  const [notification, setNotification] = useState("");
   const [newTask, setNewTask] = useState({
     title: "",
     subject: "Interação Pessoa Computador",
@@ -63,13 +173,20 @@ function App() {
     const accountsRaw = localStorage.getItem(ACCOUNTS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      setUser(parsed.user ?? null);
+      const loadedUser = parsed.user
+        ? { ...parsed.user, semesterProgress: parsed.user.semesterProgress ?? 0 }
+        : null;
+      setUser(loadedUser);
       setTasks(parsed.tasks ?? []);
       setSettings(parsed.settings ?? initialState.settings);
-      setScreen(parsed.user ? "dashboard" : "welcome");
+      setScreen(loadedUser ? "dashboard" : "welcome");
     }
     if (accountsRaw) {
-      setAccounts(JSON.parse(accountsRaw));
+      const parsedAccounts = JSON.parse(accountsRaw).map((account) => ({
+        ...account,
+        semesterProgress: account.semesterProgress ?? 0,
+      }));
+      setAccounts(parsedAccounts);
     }
     setBooted(true);
   }, []);
@@ -78,6 +195,52 @@ function App() {
     if (!booted) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, settings }));
   }, [user, tasks, settings, booted]);
+
+  const pendingTasks = useMemo(() => tasks.filter((t) => !t.completed), [tasks]);
+  const clampProgress = (value) => Math.min(100, Math.max(0, value));
+  const updateCurrentUserProgress = (delta) => {
+    setUser((prevUser) => {
+      if (!prevUser) return prevUser;
+      const nextProgress = clampProgress((prevUser.semesterProgress ?? 0) + delta);
+      const nextUser = { ...prevUser, semesterProgress: nextProgress };
+      setAccounts((prevAccounts) =>
+        prevAccounts.map((account) =>
+          account.email === nextUser.email ? { ...account, semesterProgress: nextProgress } : account
+        )
+      );
+      return nextUser;
+    });
+  };
+
+  const generateVerificationCode = () => String(Math.floor(100000 + Math.random() * 900000));
+  const isEmailJSConfigured = Boolean(
+    EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY
+  );
+  const sendValidationEmail = async ({ name, email, verificationCode }) => {
+    if (!isEmailJSConfigured) return false;
+
+    const payload = {
+      service_id: EMAILJS_SERVICE_ID,
+      template_id: EMAILJS_TEMPLATE_ID,
+      user_id: EMAILJS_PUBLIC_KEY,
+      template_params: {
+        to_name: name,
+        to_email: email,
+        verification_code: verificationCode,
+        login_url: window.location.origin,
+      },
+    };
+
+    const response = await fetch(EMAILJS_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    return response.ok;
+  };
+
+  const semesterProgress = user?.semesterProgress ?? 0;
 
   useEffect(() => {
     if (!booted) return;
@@ -90,6 +253,7 @@ function App() {
       setFocusSecondsLeft((prev) => {
         if (prev <= 1) {
           setFocusRunning(false);
+          updateCurrentUserProgress(2);
           return 0;
         }
         return prev - 1;
@@ -97,12 +261,14 @@ function App() {
     }, 1000);
     return () => clearInterval(timer);
   }, [focusRunning]);
-
-  const pendingTasks = useMemo(() => tasks.filter((t) => !t.completed), [tasks]);
-  const semesterProgress = user?.semesterProgress ?? 68;
   const isDarkMode =
     settings.theme === "Escuro" ||
     (settings.theme === "Auto" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  const accountToVerify = accounts.find(
+    (account) => account.email === authForm.email.toLowerCase().trim()
+  );
+  const needsVerification = authMode === "login" && accountToVerify && !accountToVerify.isVerified;
+
   const filteredTasks = useMemo(() => {
     const bySearch = tasks.filter((task) =>
       task.title.toLowerCase().includes(taskSearch.toLowerCase())
@@ -117,9 +283,9 @@ function App() {
   const mm = String(Math.floor(focusSecondsLeft / 60)).padStart(2, "0");
   const ss = String(focusSecondsLeft % 60).padStart(2, "0");
 
-  const onAuthSubmit = () => {
+  const onAuthSubmit = async () => {
     const email = authForm.email.toLowerCase().trim();
-    const existingAccount = accounts.find((account) => account.email === email);
+    let existingAccount = accounts.find((account) => account.email === email);
     if (!email.includes("@")) {
       alert("Email inválido.");
       return;
@@ -133,6 +299,10 @@ function App() {
         alert("Nome inválido.");
         return;
       }
+      if (!authForm.university || !authForm.course || !authForm.year) {
+        alert("Escolha universidade, curso e ano.");
+        return;
+      }
       if (authForm.password !== authForm.confirmPassword) {
         alert("As palavras-passe não coincidem.");
         return;
@@ -142,19 +312,48 @@ function App() {
         return;
       }
 
+      const verificationCode = generateVerificationCode();
       const account = {
         id: crypto.randomUUID(),
         name: authForm.name.trim(),
         email,
         password: authForm.password,
+        university: authForm.university,
+        course: authForm.course,
+        year: authForm.year,
+        semesterProgress: 0,
+        isVerified: false,
+        verificationCode,
+        verificationEmailSent: false,
       };
       setAccounts((prev) => [...prev, account]);
-      setUser({
+      const emailOk = await sendValidationEmail({
         name: account.name,
         email: account.email,
-        semesterProgress: 68,
+        verificationCode,
       });
-      setScreen("dashboard");
+      if (emailOk) {
+        setAccounts((prev) =>
+          prev.map((existing) =>
+            existing.email === account.email
+              ? { ...existing, verificationEmailSent: true }
+              : existing
+          )
+        );
+        alert(`Conta criada. Um email de validação foi enviado para ${account.email}. Insira o código no ecrã de login para ativar a conta.`);
+        setNotification(`Email de validação enviado para ${account.email}.`);
+      } else {
+        alert("Conta criada, mas não foi possível enviar o email de validação. Use o botão 'Reenviar Código' no login para tentar novamente.");
+        setNotification("Falha ao enviar email. Tente reenviar no login.");
+      }
+      setAuthMode("login");
+      setScreen("auth");
+      setAuthForm((prev) => ({
+        ...prev,
+        password: "",
+        confirmPassword: "",
+        verificationCode: "",
+      }));
       return;
     }
 
@@ -162,19 +361,78 @@ function App() {
       alert("Conta não encontrada ou palavra-passe incorreta.");
       return;
     }
+    if (!existingAccount.isVerified) {
+      if (!authForm.verificationCode) {
+        alert("Conta criada mas ainda não verificada. Insira o código enviado para o email.");
+        return;
+      }
+      if (authForm.verificationCode !== existingAccount.verificationCode) {
+        alert("Código de verificação inválido.");
+        return;
+      }
+      const verifiedAccount = {
+        ...existingAccount,
+        isVerified: true,
+        verificationCode: null,
+        verificationEmailSent: true,
+      };
+      setAccounts((prev) =>
+        prev.map((account) => (account.email === verifiedAccount.email ? verifiedAccount : account))
+      );
+      existingAccount = verifiedAccount;
+      alert("Email verificado! Agora pode entrar na conta.");
+    }
     setUser({
       name: existingAccount.name,
       email: existingAccount.email,
-      semesterProgress: 68,
+      semesterProgress: existingAccount.semesterProgress ?? 0,
+      university: existingAccount.university,
+      course: existingAccount.course,
+      year: existingAccount.year,
     });
     setScreen("dashboard");
+  };
+
+  const resendVerificationCode = async () => {
+    const email = authForm.email.toLowerCase().trim();
+    const account = accounts.find((a) => a.email === email);
+    if (!account) {
+      alert("Conta não encontrada.");
+      return;
+    }
+    if (account.isVerified) {
+      alert("Esta conta já está verificada.");
+      return;
+    }
+    const emailOk = await sendValidationEmail({
+      name: account.name,
+      email: account.email,
+      verificationCode: account.verificationCode,
+    });
+    if (emailOk) {
+      alert(`Código de validação reenviado para ${account.email}. Verifique o seu email.`);
+      setNotification(`Código reenviado com sucesso.`);
+    } else {
+      alert(`Não foi possível reenviar o código. Tente novamente mais tarde.`);
+      setNotification("Falha ao reenviar. Tente novamente.");
+    }
   };
 
   const logout = () => {
     setUser(null);
     setScreen("welcome");
     setAuthMode("login");
-    setAuthForm({ name: "", email: "", password: "", confirmPassword: "" });
+    setNotification("");
+    setAuthForm({
+      name: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+      verificationCode: "",
+      university: universityOptions[0],
+      course: courseOptions[0],
+      year: yearOptions[0],
+    });
   };
 
   const addTask = () => {
@@ -197,7 +455,12 @@ function App() {
 
   const toggleTask = (id) => {
     setTasks((prev) =>
-      prev.map((task) => (task.id === id ? { ...task, completed: !task.completed } : task))
+      prev.map((task) => {
+        if (task.id !== id) return task;
+        const updated = { ...task, completed: !task.completed };
+        updateCurrentUserProgress(updated.completed ? 8 : -8);
+        return updated;
+      })
     );
   };
 
@@ -247,6 +510,7 @@ function App() {
           <div className="auth-content">
             <h2>{authMode === "register" ? "Bem Vindo à SoftStudy" : "Bem Vindo de volta!"}</h2>
             <p className="muted">{authMode === "register" ? "Preencha os dados para começar" : "Faça login para continuar."}</p>
+            {notification && <p className="muted info-text">{notification}</p>}
             {authMode === "register" && (
               <input
                 className="input"
@@ -272,17 +536,70 @@ function App() {
               <input
                 className="input"
                 type="password"
-                placeholder="Repita a sua palavra-passe"
+                placeholder="Confirmar palavra-passe"
                 value={authForm.confirmPassword}
                 onChange={(e) => setAuthForm((p) => ({ ...p, confirmPassword: e.target.value }))}
               />
+            )}
+            {authMode === "login" && needsVerification && (
+              <>
+                <input
+                  className="input"
+                  placeholder="Código de validação"
+                  value={authForm.verificationCode}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, verificationCode: e.target.value }))}
+                />
+                <button className="btn ghost" onClick={resendVerificationCode}>
+                  Reenviar Código
+                </button>
+              </>
+            )}
+            {authMode === "register" && (
+              <>
+                <label className="input-label">Universidade</label>
+                <select
+                  className="input"
+                  value={authForm.university}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, university: e.target.value }))}
+                >
+                  {universityOptions.map((uni) => (
+                    <option key={uni} value={uni}>{uni}</option>
+                  ))}
+                </select>
+                <label className="input-label">Curso</label>
+                <select
+                  className="input"
+                  value={authForm.course}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, course: e.target.value }))}
+                >
+                  {courseOptions.map((course) => (
+                    <option key={course} value={course}>{course}</option>
+                  ))}
+                </select>
+                <label className="input-label">Ano</label>
+                <select
+                  className="input"
+                  value={authForm.year}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, year: e.target.value }))}
+                >
+                  {yearOptions.map((year) => (
+                    <option key={year} value={year}>{year}</option>
+                  ))}
+                </select>
+              </>
             )}
           </div>
           <div className="actions-stack">
             <button className="btn primary" onClick={onAuthSubmit}>
               {authMode === "register" ? "Criar Conta" : "Entrar"}
             </button>
-            <button className="link-button" onClick={() => setAuthMode((m) => (m === "login" ? "register" : "login"))}>
+            <button
+              className="link-button"
+              onClick={() => {
+                setNotification("");
+                setAuthMode((m) => (m === "login" ? "register" : "login"));
+              }}
+            >
               {authMode === "register" ? "Já tem conta? Entrar" : "Ainda não tem conta? Criar conta"}
             </button>
           </div>

@@ -7,7 +7,12 @@ const KEYS = {
 
 export async function loadUser() {
   const raw = await AsyncStorage.getItem(KEYS.USER);
-  return raw ? JSON.parse(raw) : null;
+  if (!raw) return null;
+  const user = JSON.parse(raw);
+  return {
+    ...user,
+    semesterProgress: user.semesterProgress ?? 0,
+  };
 }
 
 export async function saveUser(user) {
