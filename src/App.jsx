@@ -483,9 +483,7 @@ function App() {
   const isDarkMode =
     settings.theme === "Escuro" ||
     (settings.theme === "Auto" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
-<<<<<<< HEAD
 
-=======
   const accountToVerify = accounts.find(
     (account) => account.email === authForm.email.toLowerCase().trim()
   );
@@ -494,7 +492,6 @@ function App() {
     (account) => account.email === authForm.email.toLowerCase().trim()
   );
   const passwordResetCodeSent = authMode === "reset" && Boolean(accountToReset?.passwordResetCode);
->>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
 
   const filteredTasks = useMemo(() => {
     const normalizedSearch = taskSearch.toLowerCase().trim();
@@ -1125,15 +1122,7 @@ function App() {
               value={authForm.email}
               onChange={(e) => setAuthForm((p) => ({ ...p, email: e.target.value }))}
             />
-<<<<<<< HEAD
-            {authMode === "register" && registerAwaitingCode ? (
-              <input
-                className="input"
-                placeholder="Código de validação (6 dígitos)"
-                value={authForm.verificationCode}
-                onChange={(e) => setAuthForm((p) => ({ ...p, verificationCode: e.target.value }))}
-              />
-            ) : (
+            {(authMode !== "reset" || passwordResetCodeSent) && (
               <input
                 className="input"
                 type="password"
@@ -1142,10 +1131,7 @@ function App() {
                 onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
               />
             )}
-            {authMode === "register" && !registerAwaitingCode && (
-=======
-            {(authMode !== "reset" || passwordResetCodeSent) && (
->>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
+            {authMode === "register" && (
               <input
                 className="input"
                 type="password"
@@ -1165,10 +1151,7 @@ function App() {
                 onChange={(e) => setAuthForm((p) => ({ ...p, confirmPassword: e.target.value }))}
               />
             )}
-<<<<<<< HEAD
 
-            {authMode === "register" && !registerAwaitingCode && (
-=======
             {((authMode === "login" && needsVerification) || passwordResetCodeSent) && (
               <>
                 <input
@@ -1187,7 +1170,6 @@ function App() {
               </>
             )}
             {authMode === "register" && (
->>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
               <>
                 <label className="input-label">Universidade</label>
                 <select
@@ -1227,14 +1209,6 @@ function App() {
             <button className="btn primary" onClick={onAuthSubmit}>
               {authMode === "register"
                 ? registerAwaitingCode
-                  ? "Validar Email"
-                  : "Criar Conta"
-                : "Entrar"}
-            </button>
-            {authMode === "register" && registerAwaitingCode && (
-              <button className="btn ghost" onClick={resendVerificationCode}>
-                Reenviar Código
-=======
             <button
               className="btn primary"
               onClick={
@@ -1268,11 +1242,6 @@ function App() {
                 }}
               >
                 Esqueceu-se da palavra-passe?
->>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
-              </button>
-            )}
-            <button
-              className="link-button"
               onClick={() => {
                 setNotification("");
                 setRegisterAwaitingCode(false);
