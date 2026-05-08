@@ -4,10 +4,8 @@ import softStudyWordmark from "../Logosótexto.png";
 
 const STORAGE_KEY = "softstudy:web:v1";
 const ACCOUNTS_KEY = "softstudy:web:accounts:v1";
-const EMAILJS_API_URL = "https://api.emailjs.com/api/v1.0/email/send";
-const EMAILJS_SERVICE_ID = import.meta.env.VITE_EMAILJS_SERVICE_ID;
-const EMAILJS_TEMPLATE_ID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID;
-const EMAILJS_PUBLIC_KEY = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
+const SMTP_EMAIL_API_URL =
+  import.meta.env.VITE_SMTP_EMAIL_API_URL || "http://localhost:3001/api/send-validation-email";
 
 const initialState = {
   user: null,
@@ -213,25 +211,18 @@ function App() {
   };
 
   const generateVerificationCode = () => String(Math.floor(100000 + Math.random() * 900000));
-  const isEmailJSConfigured = Boolean(
-    EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY
-  );
+  const isSmtpEmailConfigured = Boolean(SMTP_EMAIL_API_URL);
   const sendValidationEmail = async ({ name, email, verificationCode }) => {
-    if (!isEmailJSConfigured) return false;
+    if (!isSmtpEmailConfigured) return false;
 
     const payload = {
-      service_id: EMAILJS_SERVICE_ID,
-      template_id: EMAILJS_TEMPLATE_ID,
-      user_id: EMAILJS_PUBLIC_KEY,
-      template_params: {
-        to_name: name,
-        to_email: email,
-        verification_code: verificationCode,
-        login_url: window.location.origin,
-      },
+      name,
+      email,
+      verificationCode,
+      loginUrl: window.location.origin,
     };
 
-    const response = await fetch(EMAILJS_API_URL, {
+    const response = await fetch(SMTP_EMAIL_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
