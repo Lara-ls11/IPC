@@ -138,6 +138,7 @@ function App() {
   const [tasks, setTasks] = useState(initialState.tasks);
   const [settings, setSettings] = useState(initialState.settings);
   const [focusMinutes, setFocusMinutes] = useState(25);
+  const [customFocusMinutes, setCustomFocusMinutes] = useState("25");
   const [focusSecondsLeft, setFocusSecondsLeft] = useState(25 * 60);
   const [focusRunning, setFocusRunning] = useState(false);
   const [taskFilter, setTaskFilter] = useState("Todas");
@@ -212,7 +213,7 @@ function App() {
 
   const generateVerificationCode = () => String(Math.floor(100000 + Math.random() * 900000));
   const isSmtpEmailConfigured = Boolean(SMTP_EMAIL_API_URL);
-  const sendValidationEmail = async ({ name, email, verificationCode }) => {
+  const sendValidationEmail = async ({ name, email, verificationCode, type = "validation" }) => {
     if (!isSmtpEmailConfigured) return false;
 
     const payload = {
@@ -220,6 +221,7 @@ function App() {
       email,
       verificationCode,
       loginUrl: window.location.origin,
+      type,
     };
 
     const response = await fetch(SMTP_EMAIL_API_URL, {
@@ -259,6 +261,10 @@ function App() {
     (account) => account.email === authForm.email.toLowerCase().trim()
   );
   const needsVerification = authMode === "login" && accountToVerify && !accountToVerify.isVerified;
+  const accountToReset = accounts.find(
+    (account) => account.email === authForm.email.toLowerCase().trim()
+  );
+  const passwordResetCodeSent = authMode === "reset" && Boolean(accountToReset?.passwordResetCode);
 
   const filteredTasks = useMemo(() => {
     const bySearch = tasks.filter((task) =>
@@ -409,6 +415,77 @@ function App() {
     }
   };
 
+  const requestPasswordReset = async () => {
+    const email = authForm.email.toLowerCase().trim();
+    const account = accounts.find((a) => a.email === email);
+    if (!email.includes("@")) {
+      alert("Email inválido.");
+      return;
+    }
+    if (!account) {
+      alert("Conta não encontrada.");
+      return;
+    }
+
+    const passwordResetCode = generateVerificationCode();
+    const emailOk = await sendValidationEmail({
+      name: account.name,
+      email: account.email,
+      verificationCode: passwordResetCode,
+      type: "password-reset",
+    });
+
+    if (emailOk) {
+      setAccounts((prev) =>
+        prev.map((existing) =>
+          existing.email === account.email ? { ...existing, passwordResetCode } : existing
+        )
+      );
+      alert(`Código de recuperação enviado para ${account.email}.`);
+      setNotification(`Código de recuperação enviado para ${account.email}.`);
+    } else {
+      alert("Não foi possível enviar o email de recuperação. Tente novamente mais tarde.");
+      setNotification("Falha ao enviar email de recuperação.");
+    }
+  };
+
+  const confirmPasswordReset = () => {
+    const email = authForm.email.toLowerCase().trim();
+    const account = accounts.find((a) => a.email === email);
+    if (!account) {
+      alert("Conta não encontrada.");
+      return;
+    }
+    if (!authForm.verificationCode || authForm.verificationCode !== account.passwordResetCode) {
+      alert("Código de recuperação inválido.");
+      return;
+    }
+    if (authForm.password.length < 8) {
+      alert("A nova palavra-passe deve ter pelo menos 8 caracteres.");
+      return;
+    }
+    if (authForm.password !== authForm.confirmPassword) {
+      alert("As palavras-passe não coincidem.");
+      return;
+    }
+
+    setAccounts((prev) =>
+      prev.map((existing) =>
+        existing.email === account.email
+          ? { ...existing, password: authForm.password, passwordResetCode: null }
+          : existing
+      )
+    );
+    setAuthMode("login");
+    setNotification("Palavra-passe alterada com sucesso. Já pode entrar.");
+    setAuthForm((prev) => ({
+      ...prev,
+      password: "",
+      confirmPassword: "",
+      verificationCode: "",
+    }));
+  };
+
   const logout = () => {
     setUser(null);
     setScreen("welcome");
@@ -460,7 +537,13 @@ function App() {
     setFocusSecondsLeft(focusMinutes * 60);
   };
 
-  const setPreset = (value) => {
+  const applyCustomFocusMinutes = () => {
+    const value = Number(customFocusMinutes);
+    if (!Number.isInteger(value) || value < 1 || value > 180) {
+      alert("Escolha um tempo entre 1 e 180 minutos.");
+      return;
+    }
+
     setFocusMinutes(value);
     setFocusSecondsLeft(value * 60);
     setFocusRunning(false);
@@ -499,8 +582,20 @@ function App() {
             <img className="logo-image small" src={softStudyLogo} alt="SoftStudy" />
           </header>
           <div className="auth-content">
-            <h2>{authMode === "register" ? "Bem Vindo à SoftStudy" : "Bem Vindo de volta!"}</h2>
-            <p className="muted">{authMode === "register" ? "Preencha os dados para começar" : "Faça login para continuar."}</p>
+            <h2>
+              {authMode === "register"
+                ? "Bem Vindo à SoftStudy"
+                : authMode === "reset"
+                  ? "Recuperar palavra-passe"
+                  : "Bem Vindo de volta!"}
+            </h2>
+            <p className="muted">
+              {authMode === "register"
+                ? "Preencha os dados para começar"
+                : authMode === "reset"
+                  ? "Indique o email da conta para receber um código."
+                  : "Faça login para continuar."}
+            </p>
             {notification && <p className="muted info-text">{notification}</p>}
             {authMode === "register" && (
               <input
@@ -516,33 +611,41 @@ function App() {
               value={authForm.email}
               onChange={(e) => setAuthForm((p) => ({ ...p, email: e.target.value }))}
             />
-            <input
-              className="input"
-              type="password"
-              placeholder="Mínimo 8 caracteres"
-              value={authForm.password}
-              onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
-            />
-            {authMode === "register" && (
+            {(authMode !== "reset" || passwordResetCodeSent) && (
               <input
                 className="input"
                 type="password"
-                placeholder="Confirmar palavra-passe"
+                placeholder={authMode === "reset" ? "Nova palavra-passe" : "Mínimo 8 caracteres"}
+                value={authForm.password}
+                onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
+              />
+            )}
+            {(authMode === "register" || passwordResetCodeSent) && (
+              <input
+                className="input"
+                type="password"
+                placeholder={
+                  authMode === "reset" ? "Confirmar nova palavra-passe" : "Confirmar palavra-passe"
+                }
                 value={authForm.confirmPassword}
                 onChange={(e) => setAuthForm((p) => ({ ...p, confirmPassword: e.target.value }))}
               />
             )}
-            {authMode === "login" && needsVerification && (
+            {((authMode === "login" && needsVerification) || passwordResetCodeSent) && (
               <>
                 <input
                   className="input"
-                  placeholder="Código de validação"
+                  placeholder={
+                    authMode === "reset" ? "Código de recuperação" : "Código de validação"
+                  }
                   value={authForm.verificationCode}
                   onChange={(e) => setAuthForm((p) => ({ ...p, verificationCode: e.target.value }))}
                 />
-                <button className="btn ghost" onClick={resendVerificationCode}>
-                  Reenviar Código
-                </button>
+                {authMode === "login" && (
+                  <button className="btn ghost" onClick={resendVerificationCode}>
+                    Reenviar Código
+                  </button>
+                )}
               </>
             )}
             {authMode === "register" && (
@@ -581,17 +684,57 @@ function App() {
             )}
           </div>
           <div className="actions-stack">
-            <button className="btn primary" onClick={onAuthSubmit}>
-              {authMode === "register" ? "Criar Conta" : "Entrar"}
+            <button
+              className="btn primary"
+              onClick={
+                authMode === "reset"
+                  ? passwordResetCodeSent
+                    ? confirmPasswordReset
+                    : requestPasswordReset
+                  : onAuthSubmit
+              }
+            >
+              {authMode === "register"
+                ? "Criar Conta"
+                : authMode === "reset"
+                  ? passwordResetCodeSent
+                    ? "Alterar Palavra-passe"
+                    : "Enviar Código"
+                  : "Entrar"}
             </button>
+            {authMode === "login" && (
+              <button
+                className="link-button"
+                onClick={() => {
+                  setNotification("");
+                  setAuthMode("reset");
+                  setAuthForm((prev) => ({
+                    ...prev,
+                    password: "",
+                    confirmPassword: "",
+                    verificationCode: "",
+                  }));
+                }}
+              >
+                Esqueceu-se da palavra-passe?
+              </button>
+            )}
             <button
               className="link-button"
               onClick={() => {
                 setNotification("");
                 setAuthMode((m) => (m === "login" ? "register" : "login"));
+                setAuthForm((prev) => ({
+                  ...prev,
+                  password: "",
+                  confirmPassword: "",
+                  verificationCode: "",
+                }));
               }}
             >
-              {authMode === "register" ? "Já tem conta? Entrar" : "Ainda não tem conta? Criar conta"}
+              {authMode === "register" || authMode === "reset"
+                ? "Já tem conta? Entrar"
+                : "Ainda não tem conta? Criar conta"}
             </button>
           </div>
         </section>
@@ -741,12 +884,20 @@ function App() {
             <button className="btn primary" onClick={() => setFocusRunning((v) => !v)}>{focusRunning ? "Pausar" : "Iniciar"}</button>
             <button className="btn ghost" onClick={() => setScreen("tasks")}>Tarefas</button>
           </div>
-          <div className="chips">
-            {[25, 45, 60].map((v) => (
-              <button key={v} className={`chip ${focusMinutes === v ? "active" : ""}`} onClick={() => setPreset(v)}>
-                {v}m
-              </button>
-            ))}
+          <div className="card">
+            <label className="input-label">Tempo personalizado em minutos</label>
+            <input
+              className="input"
+              min="1"
+              max="180"
+              placeholder="Ex: 30"
+              type="number"
+              value={customFocusMinutes}
+              onChange={(e) => setCustomFocusMinutes(e.target.value)}
+            />
+            <button className="btn ghost" onClick={applyCustomFocusMinutes}>
+              Aplicar tempo
+            </button>
           </div>
           <div className="card task">
             <small>Tarefa Atual</small>

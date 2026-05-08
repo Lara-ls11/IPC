@@ -51,6 +51,7 @@ app.post("/api/send-validation-email", async (request, response) => {
   const email = String(request.body.email || "").trim().toLowerCase();
   const verificationCode = String(request.body.verificationCode || "").trim();
   const loginUrl = String(request.body.loginUrl || "").trim();
+  const type = request.body.type === "password-reset" ? "password-reset" : "validation";
 
   if (!smtpUsername || !smtpPassword || !fromEmail) {
     response.status(500).json({ ok: false, error: "SMTP nao configurado." });
@@ -63,25 +64,37 @@ app.post("/api/send-validation-email", async (request, response) => {
   }
 
   try {
+    const isPasswordReset = type === "password-reset";
+    const subject = isPasswordReset
+      ? "Codigo para recuperar a palavra-passe SoftStudy"
+      : "Codigo de validacao SoftStudy";
+    const intro = isPasswordReset
+      ? "Recebemos um pedido para alterar a sua palavra-passe."
+      : "O seu codigo de validacao SoftStudy e:";
+    const warning = isPasswordReset
+      ? "Se nao pediu esta alteracao, ignore este email."
+      : "Se nao criou esta conta, ignore este email.";
+
     await transporter.sendMail({
       from: `"${fromName}" <${fromEmail}>`,
       to: email,
-      subject: "Codigo de validacao SoftStudy",
+      subject,
       text: [
         `Ola ${name},`,
         "",
-        `O seu codigo de validacao SoftStudy e: ${verificationCode}`,
+        intro,
+        verificationCode,
         "",
         loginUrl ? `Pode voltar a app em: ${loginUrl}` : "",
         "",
-        "Se nao criou esta conta, ignore este email.",
+        warning,
       ].join("\n"),
       html: `
         <p>Ola ${escapeHtml(name)},</p>
-        <p>O seu codigo de validacao SoftStudy e:</p>
+        <p>${escapeHtml(intro)}</p>
         <p style="font-size: 24px; font-weight: bold;">${escapeHtml(verificationCode)}</p>
         ${loginUrl ? `<p>Pode voltar a app em: <a href="${escapeHtml(loginUrl)}">${escapeHtml(loginUrl)}</a></p>` : ""}
-        <p>Se nao criou esta conta, ignore este email.</p>
+        <p>${escapeHtml(warning)}</p>
       `,
     });
 

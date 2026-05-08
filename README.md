@@ -30,9 +30,12 @@ O backend expoe `POST /api/send-validation-email` e aceita JSON neste formato:
   "name": "Nome do utilizador",
   "email": "utilizador@example.com",
   "verificationCode": "123456",
-  "loginUrl": "http://localhost:5173"
+  "loginUrl": "http://localhost:5173",
+  "type": "validation"
 }
 ```
+
+Use `"type": "password-reset"` para enviar um codigo de recuperacao de palavra-passe. Se `type` nao for enviado, o backend assume validacao de conta.
 
 Se o email for enviado com sucesso, a API responde com HTTP `2xx`. Se falhar, responde com `4xx` ou `5xx`.
 
