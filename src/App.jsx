@@ -7,10 +7,14 @@ const ACCOUNTS_KEY = "softstudy:web:accounts:v1";
 const DEADLINE_ALERTS_SENT_KEY = "softstudy:web:deadline-alerts-sent:v1";
 const SMTP_EMAIL_API_URL =
   import.meta.env.VITE_SMTP_EMAIL_API_URL || "http://localhost:3001/api/send-validation-email";
+const SCHEDULE_IMPORT_API_URL =
+  import.meta.env.VITE_SCHEDULE_IMPORT_API_URL ||
+  SMTP_EMAIL_API_URL.replace("/api/send-validation-email", "/api/import-schedule-url");
 
 const initialState = {
   user: null,
   tasks: [],
+  scheduleItems: [],
   settings: {
     deadlineAlerts: true,
     alertInterval: "30 min",
@@ -119,6 +123,8 @@ const yearOptions = [
   "4.º Ano",
   "5.º Ano",
 ];
+const weekDays = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
+const icsWeekDays = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 
 function formatDateLabel(date) {
   const today = new Date();
@@ -157,6 +163,119 @@ function getDeadlineAlertInfo(task, interval, now) {
   };
 }
 
+function unfoldIcsLines(icsText) {
+  return String(icsText)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .reduce((lines, line) => {
+      if (/^[ \t]/.test(line) && lines.length > 0) {
+        lines[lines.length - 1] += line.slice(1);
+      } else {
+        lines.push(line);
+      }
+      return lines;
+    }, []);
+}
+
+function unescapeIcsValue(value = "") {
+  return value
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+
+function parseIcsDate(value = "") {
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})T?(\d{2})?(\d{2})?/);
+  if (!match) return null;
+
+  const [, year, month, day, hour = "00", minute = "00"] = match;
+  return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+}
+
+function readIcsProperty(event, propertyName) {
+  const prefix = propertyName.toUpperCase();
+  const line = event.find((item) => item.toUpperCase().startsWith(prefix));
+  if (!line) return "";
+  return unescapeIcsValue(line.slice(line.indexOf(":") + 1));
+}
+
+function formatScheduleTime(date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function formatScheduleDate(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function getScheduleItemKey(item) {
+  return [
+    item.type,
+    item.title,
+    item.subject,
+    item.day,
+    item.startTime,
+    item.endTime,
+    item.location,
+  ].join("|").toLowerCase();
+}
+
+function parseIcsSchedule(icsText) {
+  const lines = unfoldIcsLines(icsText);
+  const events = [];
+  let currentEvent = null;
+
+  lines.forEach((line) => {
+    if (line === "BEGIN:VEVENT") {
+      currentEvent = [];
+      return;
+    }
+    if (line === "END:VEVENT" && currentEvent) {
+      events.push(currentEvent);
+      currentEvent = null;
+      return;
+    }
+    if (currentEvent) currentEvent.push(line);
+  });
+
+  return events
+    .map((event) => {
+      const summary = readIcsProperty(event, "SUMMARY");
+      const location = readIcsProperty(event, "LOCATION");
+      const description = readIcsProperty(event, "DESCRIPTION");
+      const start = parseIcsDate(readIcsProperty(event, "DTSTART"));
+      const end = parseIcsDate(readIcsProperty(event, "DTEND"));
+      if (!start || !end) return null;
+
+      const cleanSummary = summary || "Aula importada";
+      const parts = cleanSummary.split(/\s[-–]\s/).map((part) => part.trim()).filter(Boolean);
+      const subject = parts[0]?.toLowerCase() === "aula" ? parts[1] : parts[0];
+
+      return {
+        type: "Aula",
+        title: cleanSummary,
+        subject: subject || cleanSummary,
+        day: icsWeekDays[start.getDay()] || "Segunda",
+        date: formatScheduleDate(start),
+        startTime: formatScheduleTime(start),
+        endTime: formatScheduleTime(end),
+        location,
+        notes: description,
+      };
+    })
+    .filter((item) => {
+      if (!item) return false;
+      return item.date >= formatScheduleDate(new Date());
+    })
+    .filter(Boolean);
+}
+
 function App() {
   const [booted, setBooted] = useState(false);
   const [screen, setScreen] = useState("welcome");
@@ -164,6 +283,7 @@ function App() {
   const [accounts, setAccounts] = useState([]);
   const [user, setUser] = useState(initialState.user);
   const [tasks, setTasks] = useState(initialState.tasks);
+  const [scheduleItems, setScheduleItems] = useState(initialState.scheduleItems);
   const [settings, setSettings] = useState(initialState.settings);
   const [now, setNow] = useState(() => Date.now());
   const [sentDeadlineAlerts, setSentDeadlineAlerts] = useState(() => {
@@ -197,6 +317,19 @@ function App() {
     notes: "",
     remind: true,
   });
+  const [newScheduleItem, setNewScheduleItem] = useState({
+    type: "Aula",
+    title: "",
+    subject: "Interação Pessoa Computador",
+    day: weekDays[0],
+    startTime: "09:00",
+    endTime: "10:30",
+    location: "",
+    notes: "",
+  });
+  const [scheduleImportUrl, setScheduleImportUrl] = useState("");
+  const [scheduleImportPreview, setScheduleImportPreview] = useState([]);
+  const [scheduleImportStatus, setScheduleImportStatus] = useState("");
   const [profileForm, setProfileForm] = useState({
     degree: "Engenharia Informática - 3º Ano",
   });
@@ -211,6 +344,7 @@ function App() {
         : null;
       setUser(loadedUser);
       setTasks(parsed.tasks ?? []);
+      setScheduleItems(parsed.scheduleItems ?? []);
       setSettings(parsed.settings ?? initialState.settings);
       setScreen(loadedUser ? "dashboard" : "welcome");
     }
@@ -226,8 +360,8 @@ function App() {
 
   useEffect(() => {
     if (!booted) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, settings }));
-  }, [user, tasks, settings, booted]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, scheduleItems, settings }));
+  }, [user, tasks, scheduleItems, settings, booted]);
 
   useEffect(() => {
     localStorage.setItem(DEADLINE_ALERTS_SENT_KEY, JSON.stringify(sentDeadlineAlerts));
@@ -340,6 +474,34 @@ function App() {
     () => ["Todas", ...Array.from(new Set(tasks.map((task) => task.subject).filter(Boolean))).sort()],
     [tasks]
   );
+  const scheduleByDay = useMemo(() => {
+    const grouped = Object.fromEntries(weekDays.map((day) => [day, []]));
+
+    scheduleItems.forEach((item) => {
+      const day = weekDays.includes(item.day) ? item.day : weekDays[0];
+      grouped[day].push(item);
+    });
+
+    return Object.entries(grouped)
+      .map(([day, items]) => ({
+        day,
+        items: [...items].sort((a, b) => a.startTime.localeCompare(b.startTime)),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [scheduleItems]);
+  const scheduleGrid = useMemo(() => {
+    const grouped = Object.fromEntries(weekDays.map((day) => [day, []]));
+
+    scheduleItems.forEach((item) => {
+      const day = weekDays.includes(item.day) ? item.day : weekDays[0];
+      grouped[day].push(item);
+    });
+
+    return weekDays.map((day) => ({
+      day,
+      items: [...grouped[day]].sort((a, b) => a.startTime.localeCompare(b.startTime)),
+    }));
+  }, [scheduleItems]);
   const deadlineAlertTasks = useMemo(() => {
     if (!settings.deadlineAlerts) return [];
 
@@ -633,6 +795,117 @@ function App() {
     setNewTask((prev) => ({ ...prev, title: "", notes: "" }));
   };
 
+  const addScheduleItem = () => {
+    if (!newScheduleItem.title.trim()) {
+      alert("O nome da aula ou atividade é obrigatório.");
+      return;
+    }
+    if (newScheduleItem.endTime <= newScheduleItem.startTime) {
+      alert("A hora de fim deve ser posterior à hora de início.");
+      return;
+    }
+
+    const item = {
+      id: crypto.randomUUID(),
+      ...newScheduleItem,
+      title: newScheduleItem.title.trim(),
+      subject: newScheduleItem.subject.trim(),
+      location: newScheduleItem.location.trim(),
+      notes: newScheduleItem.notes.trim(),
+    };
+
+    setScheduleItems((prev) => [...prev, item]);
+    setNewScheduleItem((prev) => ({ ...prev, title: "", location: "", notes: "" }));
+  };
+
+  const previewImportedScheduleItems = (items, sourceLabel) => {
+    const uniqueItems = Array.from(
+      new Map(items.map((item) => [getScheduleItemKey(item), item])).values()
+    );
+
+    if (!uniqueItems.length) {
+      setScheduleImportPreview([]);
+      setScheduleImportStatus("Não foram encontrados eventos no horário importado.");
+      return;
+    }
+
+    setScheduleImportPreview(uniqueItems);
+    setScheduleImportStatus(
+      `${uniqueItems.length} evento(s) únicos encontrados em ${sourceLabel}. Clique em "Guardar eventos importados" para visualizar na grelha.`
+    );
+  };
+
+  const importScheduleFromUrl = async () => {
+    const url = scheduleImportUrl.trim();
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      alert("Cole um URL válido do horário.");
+      return;
+    }
+
+    try {
+      setScheduleImportStatus("A importar horário por URL...");
+      const response = await fetch(SCHEDULE_IMPORT_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("O servidor de importação não respondeu em JSON. Confirme que o backend está a correr com npm run dev:server.");
+      }
+
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || "Não foi possível importar o horário.");
+      }
+
+      previewImportedScheduleItems(result.items || [], "URL");
+    } catch (error) {
+      setScheduleImportStatus(error.message);
+    }
+  };
+
+  const importScheduleFromFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      previewImportedScheduleItems(parseIcsSchedule(text), file.name);
+    } catch (error) {
+      setScheduleImportStatus(error.message);
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const saveImportedScheduleItems = () => {
+    if (!scheduleImportPreview.length) return;
+
+    const existingKeys = new Set(scheduleItems.map(getScheduleItemKey));
+    const newItems = [];
+
+    scheduleImportPreview.forEach((item) => {
+      const key = getScheduleItemKey(item);
+      if (existingKeys.has(key)) return;
+      existingKeys.add(key);
+      newItems.push({ ...item, id: crypto.randomUUID(), imported: true });
+    });
+
+    if (!newItems.length) {
+      setScheduleImportStatus("Todos os eventos importados já existem no horário.");
+      return;
+    }
+
+    setScheduleItems((prev) => [...prev, ...newItems]);
+    setScheduleImportPreview([]);
+    setScheduleImportStatus(`${newItems.length} evento(s) adicionados ao horário. Veja-os na grelha semanal abaixo.`);
+  };
+
+  const deleteScheduleItem = (id) => {
+    setScheduleItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
   const toggleTask = (id) => {
     setTasks((prev) =>
       prev.map((task) => {
@@ -663,7 +936,7 @@ function App() {
 
   if (!booted) return <div className="app-container loading">A carregar...</div>;
 
-  const showBottomNav = ["dashboard", "tasks", "focus", "settings", "profile"].includes(screen);
+  const showBottomNav = ["dashboard", "tasks", "focus", "schedule", "settings", "profile"].includes(screen);
 
   return (
     <div className={`app-container ${isDarkMode ? "dark" : ""}`}>
@@ -891,6 +1164,10 @@ function App() {
               <strong>Timer Foco</strong>
               <span>25:00 min</span>
             </button>
+            <button className="card action" onClick={() => setScreen("schedule")}>
+              <strong>Horário</strong>
+              <span>Aulas e atividades</span>
+            </button>
           </div>
           <div className="top-row">
             <h3>Próximas Tarefas</h3>
@@ -1028,6 +1305,185 @@ function App() {
             <small>Tarefa Atual</small>
             <h4>{focusTask?.title || "Sem tarefa associada"}</h4>
             <p className="muted">{focusTask?.subject || "Escolhe uma tarefa em 'Tarefas'."}</p>
+          </div>
+        </section>
+      )}
+
+      {screen === "schedule" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <div>
+              <h2>Horário</h2>
+              <p className="muted">Importe o horário escolar e adicione atividades externas.</p>
+            </div>
+            <button className="small-link" onClick={() => setScreen("dashboard")}>Voltar</button>
+          </div>
+
+          <div className="card">
+            <h3>Importar horário escolar</h3>
+            <p className="muted">
+              Cole o URL de sincronização do Inforestudante ou importe um ficheiro .ics descarregado.
+            </p>
+            <label className="input-label">URL do horário</label>
+            <input
+              className="input"
+              placeholder="https://inforestudante.utad.pt/nonio/util/sincronizaHorarioNonio.do?..."
+              value={scheduleImportUrl}
+              onChange={(e) => setScheduleImportUrl(e.target.value)}
+            />
+            <button className="btn ghost" onClick={importScheduleFromUrl}>
+              Importar por URL
+            </button>
+            <label className="input-label">Ou importar ficheiro .ics</label>
+            <input className="input" type="file" accept=".ics,text/calendar" onChange={importScheduleFromFile} />
+            {scheduleImportStatus && <p className="muted info-text">{scheduleImportStatus}</p>}
+            {scheduleImportPreview.length > 0 && (
+              <>
+                <h4>Pré-visualização</h4>
+                {scheduleImportPreview.slice(0, 5).map((item) => (
+                  <div key={getScheduleItemKey(item)} className="card task">
+                    <small>{item.day} · {item.startTime} - {item.endTime}</small>
+                    <h4>{item.title}</h4>
+                    <p className="muted">
+                      {item.subject}
+                      {item.location ? ` · ${item.location}` : ""}
+                    </p>
+                  </div>
+                ))}
+                {scheduleImportPreview.length > 5 && (
+                  <p className="muted">Mais {scheduleImportPreview.length - 5} evento(s) na importação.</p>
+                )}
+                <button className="btn primary" onClick={saveImportedScheduleItems}>
+                  Guardar eventos importados e mostrar no horário
+                </button>
+                <button className="btn ghost" onClick={() => setScheduleImportPreview([])}>
+                  Cancelar importação
+                </button>
+              </>
+            )}
+          </div>
+
+          <div className="card">
+            <h3>Adicionar atividade manual</h3>
+            <label className="input-label">Tipo</label>
+            <div className="chips">
+              {["Aula", "Atividade externa"].map((type) => (
+                <button
+                  key={type}
+                  className={`chip ${newScheduleItem.type === type ? "active" : ""}`}
+                  onClick={() => setNewScheduleItem((prev) => ({ ...prev, type }))}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+            <label className="input-label">Nome</label>
+            <input
+              className="input"
+              placeholder="Ex: Teórica de IPC ou Ginásio"
+              value={newScheduleItem.title}
+              onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, title: e.target.value }))}
+            />
+            <label className="input-label">Cadeira ou área</label>
+            <input
+              className="input"
+              placeholder="Ex: Interação Pessoa Computador"
+              value={newScheduleItem.subject}
+              onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, subject: e.target.value }))}
+            />
+            <div className="grid-2">
+              <div>
+                <label className="input-label">Dia</label>
+                <select
+                  className="input"
+                  value={newScheduleItem.day}
+                  onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, day: e.target.value }))}
+                >
+                  {weekDays.map((day) => (
+                    <option key={day}>{day}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="input-label">Local</label>
+                <input
+                  className="input"
+                  placeholder="Sala, campus ou local"
+                  value={newScheduleItem.location}
+                  onChange={(e) =>
+                    setNewScheduleItem((prev) => ({ ...prev, location: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+            <div className="grid-2">
+              <div>
+                <label className="input-label">Início</label>
+                <input
+                  className="input"
+                  type="time"
+                  value={newScheduleItem.startTime}
+                  onChange={(e) =>
+                    setNewScheduleItem((prev) => ({ ...prev, startTime: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="input-label">Fim</label>
+                <input
+                  className="input"
+                  type="time"
+                  value={newScheduleItem.endTime}
+                  onChange={(e) =>
+                    setNewScheduleItem((prev) => ({ ...prev, endTime: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+            <label className="input-label">Notas</label>
+            <textarea
+              className="input"
+              rows={3}
+              placeholder="Ex: levar portátil, material, grupo de trabalho..."
+              value={newScheduleItem.notes}
+              onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+            <button className="btn primary" onClick={addScheduleItem}>
+              Adicionar ao Horário
+            </button>
+          </div>
+
+          <h3>Vista semanal</h3>
+          {scheduleByDay.length === 0 && (
+            <p className="muted">Ainda não há eventos guardados. Importe o horário ou adicione uma atividade.</p>
+          )}
+          <div className="schedule-grid">
+            {scheduleGrid.map((group) => (
+              <div key={group.day} className="schedule-day">
+                <strong>{group.day}</strong>
+                {group.items.length === 0 ? (
+                  <p className="muted">Sem eventos</p>
+                ) : (
+                  group.items.map((item) => (
+                    <div key={item.id} className="schedule-block">
+                          <small>
+                            {item.date ? `${formatDateLabel(item.date)} · ` : ""}
+                            {item.startTime} - {item.endTime}
+                          </small>
+                      <h4>{item.title}</h4>
+                      <p>
+                        {item.type} · {item.subject}
+                        {item.location ? ` · ${item.location}` : ""}
+                      </p>
+                      {item.notes && <p className="muted">{item.notes}</p>}
+                      <button className="btn mini ghost" onClick={() => deleteScheduleItem(item.id)}>
+                        Remover
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            ))}
           </div>
         </section>
       )}
@@ -1185,6 +1641,7 @@ function App() {
           <button className={screen === "dashboard" ? "active" : ""} onClick={() => setScreen("dashboard")}><span>⌂</span>Painel</button>
           <button className={screen === "tasks" || screen === "newTask" ? "active" : ""} onClick={() => setScreen("tasks")}><span>☷</span>Tarefas</button>
           <button className={screen === "focus" ? "active" : ""} onClick={() => setScreen("focus")}><span>◴</span>Foco</button>
+          <button className={screen === "schedule" ? "active" : ""} onClick={() => setScreen("schedule")}><span>▦</span>Horário</button>
           <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}><span>⚙</span>Ajustes</button>
         </nav>
       )}

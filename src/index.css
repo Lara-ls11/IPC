@@ -53,6 +53,16 @@ body {
   border-top-color: #2c3348;
 }
 
+.app-container.dark .schedule-day {
+  background: #1d2233;
+  border-color: #343a51;
+}
+
+.app-container.dark .schedule-block {
+  background: #222638;
+  box-shadow: none;
+}
+
 .app-container.loading {
   display: grid;
   place-items: center;
@@ -359,6 +369,60 @@ label {
   font-weight: 700;
 }
 
+.schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 160px);
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 0 12px;
+  margin-bottom: 18px;
+  min-height: 260px;
+}
+
+.schedule-day {
+  min-width: 140px;
+  min-height: 220px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #f9fafb;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schedule-day > strong {
+  display: block;
+  color: #8b5fd4;
+  background: #f3e8ff;
+  border-radius: 10px;
+  padding: 8px;
+  text-align: center;
+}
+
+.schedule-block {
+  border-left: 4px solid #c792f6;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+  margin-bottom: 8px;
+  box-shadow: 0 4px 10px rgba(17, 24, 39, 0.06);
+}
+
+.schedule-block small {
+  color: #8b5fd4;
+  font-weight: 800;
+}
+
+.schedule-block h4 {
+  margin-top: 4px;
+}
+
+.schedule-block p {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
 .switch-row {
   display: flex;
   align-items: center;
@@ -489,7 +553,7 @@ label {
   background: #fff;
   border-top: 1px solid #e5e7eb;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   justify-items: center;
   border-top-left-radius: 24px;
   border-top-right-radius: 24px;
