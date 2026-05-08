@@ -129,6 +129,14 @@ function formatDateLabel(date) {
   return target.toLocaleDateString("pt-PT");
 }
 
+function getTaskDateTime(task) {
+  return new Date(`${task.dueDate || "9999-12-31"}T${task.dueTime || "23:59"}`).getTime();
+}
+
+function getImportanceRank(importance) {
+  return { Alta: 0, Média: 1, Baixa: 2 }[importance] ?? 3;
+}
+
 function App() {
   const [booted, setBooted] = useState(false);
   const [screen, setScreen] = useState("welcome");
@@ -142,6 +150,7 @@ function App() {
   const [focusSecondsLeft, setFocusSecondsLeft] = useState(25 * 60);
   const [focusRunning, setFocusRunning] = useState(false);
   const [taskFilter, setTaskFilter] = useState("Todas");
+  const [subjectFilter, setSubjectFilter] = useState("Todas");
   const [taskSearch, setTaskSearch] = useState("");
   const [authForm, setAuthForm] = useState({
     name: "",
@@ -267,14 +276,34 @@ function App() {
   const passwordResetCodeSent = authMode === "reset" && Boolean(accountToReset?.passwordResetCode);
 
   const filteredTasks = useMemo(() => {
-    const bySearch = tasks.filter((task) =>
-      task.title.toLowerCase().includes(taskSearch.toLowerCase())
+    const normalizedSearch = taskSearch.toLowerCase().trim();
+    const bySearch = tasks.filter((task) => {
+      const title = task.title.toLowerCase();
+      const subject = task.subject.toLowerCase();
+      return title.includes(normalizedSearch) || subject.includes(normalizedSearch);
+    });
+    const byStatus = bySearch.filter((task) => {
+      if (taskFilter === "Pendentes") return !task.completed;
+      if (taskFilter === "Concluídas") return task.completed;
+      if (taskFilter === "Urgentes") return task.importance === "Alta";
+      return true;
+    });
+    const bySubject = byStatus.filter((task) =>
+      subjectFilter === "Todas" ? true : task.subject === subjectFilter
     );
-    if (taskFilter === "Pendentes") return bySearch.filter((task) => !task.completed);
-    if (taskFilter === "Concluídas") return bySearch.filter((task) => task.completed);
-    if (taskFilter === "Urgentes") return bySearch.filter((task) => task.importance === "Alta");
-    return bySearch;
-  }, [tasks, taskSearch, taskFilter]);
+
+    return [...bySubject].sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      const dateDiff = getTaskDateTime(a) - getTaskDateTime(b);
+      if (dateDiff !== 0) return dateDiff;
+      return getImportanceRank(a.importance) - getImportanceRank(b.importance);
+    });
+  }, [tasks, taskSearch, taskFilter, subjectFilter]);
+
+  const subjectOptions = useMemo(
+    () => ["Todas", ...Array.from(new Set(tasks.map((task) => task.subject).filter(Boolean))).sort()],
+    [tasks]
+  );
 
   const focusTask = pendingTasks[0];
   const mm = String(Math.floor(focusSecondsLeft / 60)).padStart(2, "0");
@@ -799,10 +828,11 @@ function App() {
           <h2>Minhas Tarefas</h2>
           <input
             className="input"
-            placeholder="Pesquisar tarefas..."
+            placeholder="Pesquisar por tarefa ou cadeira..."
             value={taskSearch}
             onChange={(e) => setTaskSearch(e.target.value)}
           />
+          <p className="muted">Organizadas automaticamente por prazo e importância.</p>
           <div className="chips">
             {["Todas", "Pendentes", "Concluídas", "Urgentes"].map((filter) => (
               <button
@@ -811,6 +841,18 @@ function App() {
                 onClick={() => setTaskFilter(filter)}
               >
                 {filter}
+              </button>
+            ))}
+          </div>
+          <label className="input-label">Filtrar por cadeira</label>
+          <div className="chips">
+            {subjectOptions.map((subject) => (
+              <button
+                key={subject}
+                className={`chip ${subjectFilter === subject ? "active" : ""}`}
+                onClick={() => setSubjectFilter(subject)}
+              >
+                {subject}
               </button>
             ))}
           </div>
