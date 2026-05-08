@@ -1,16 +1,68 @@
-# React + Vite
+# SoftStudy
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicacao React + Vite para organizacao de estudo, tarefas e foco.
 
-Currently, two official plugins are available:
+## Desenvolvimento
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev
+```
 
-## React Compiler
+Para correr tambem o backend de email, use outro terminal:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm run dev:server
+```
 
-## Expanding the ESLint configuration
+## Envio de emails por SMTP Gmail
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+O envio do codigo de validacao e feito pelo backend Node em `server/index.js`. O frontend chama `VITE_SMTP_EMAIL_API_URL` e o backend envia o email por SMTP, por exemplo com Gmail SMTP e uma App Password.
+
+Nao coloque credenciais SMTP no frontend. Utilizador, palavra-passe, App Password e host SMTP devem ficar apenas no backend.
+
+### Endpoint da API
+
+O backend expoe `POST /api/send-validation-email` e aceita JSON neste formato:
+
+```json
+{
+  "name": "Nome do utilizador",
+  "email": "utilizador@example.com",
+  "verificationCode": "123456",
+  "loginUrl": "http://localhost:5173",
+  "type": "validation"
+}
+```
+
+Use `"type": "password-reset"` para enviar um codigo de recuperacao de palavra-passe. Se `type` nao for enviado, o backend assume validacao de conta.
+
+Se o email for enviado com sucesso, a API responde com HTTP `2xx`. Se falhar, responde com `4xx` ou `5xx`.
+
+### Configurar o backend
+
+Copie `.env.example` para `.env` e preencha os dados da sua conta:
+
+```env
+PORT=3001
+CLIENT_ORIGIN=http://localhost:5173
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=o-seu-email@gmail.com
+SMTP_PASS=a-sua-app-password
+SMTP_FROM_EMAIL=o-seu-email@gmail.com
+SMTP_FROM_NAME=SoftStudy
+```
+
+### Configurar o frontend
+
+No mesmo ficheiro `.env`, pode configurar a URL usada pelo frontend:
+
+```env
+VITE_SMTP_EMAIL_API_URL=http://localhost:3001/api/send-validation-email
+```
+
+Se esta variavel nao existir, o frontend usa automaticamente `http://localhost:3001/api/send-validation-email`.
+
+Depois reinicie o frontend com `npm run dev` e o backend com `npm run dev:server`.

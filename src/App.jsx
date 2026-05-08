@@ -4,14 +4,17 @@ import softStudyWordmark from "../Logosótexto.png";
 
 const STORAGE_KEY = "softstudy:web:v1";
 const ACCOUNTS_KEY = "softstudy:web:accounts:v1";
-const EMAILJS_API_URL = "https://api.emailjs.com/api/v1.0/email/send";
-const EMAILJS_SERVICE_ID = import.meta.env.VITE_EMAILJS_SERVICE_ID;
-const EMAILJS_TEMPLATE_ID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID;
-const EMAILJS_PUBLIC_KEY = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
+const DEADLINE_ALERTS_SENT_KEY = "softstudy:web:deadline-alerts-sent:v1";
+const SMTP_EMAIL_API_URL =
+  import.meta.env.VITE_SMTP_EMAIL_API_URL || "http://localhost:3001/api/send-validation-email";
+const SCHEDULE_IMPORT_API_URL =
+  import.meta.env.VITE_SCHEDULE_IMPORT_API_URL ||
+  SMTP_EMAIL_API_URL.replace("/api/send-validation-email", "/api/import-schedule-url");
 
 const initialState = {
   user: null,
   tasks: [],
+  scheduleItems: [],
   settings: {
     deadlineAlerts: true,
     alertInterval: "30 min",
@@ -160,6 +163,8 @@ const yearOptions = [
   "4.º Ano",
   "5.º Ano",
 ];
+const weekDays = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
+const icsWeekDays = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 
 function formatDateLabel(date) {
   const today = new Date();
@@ -171,6 +176,146 @@ function formatDateLabel(date) {
   return target.toLocaleDateString("pt-PT");
 }
 
+function getTaskDateTime(task) {
+  return new Date(`${task.dueDate || "9999-12-31"}T${task.dueTime || "23:59"}`).getTime();
+}
+
+function getImportanceRank(importance) {
+  return { Alta: 0, Média: 1, Baixa: 2 }[importance] ?? 3;
+}
+
+function getAlertIntervalMinutes(interval) {
+  return { "30 min": 30, "1 h": 60, "2 h": 120, "24 h": 1440 }[interval] ?? 30;
+}
+
+function getDeadlineAlertInfo(task, interval, now) {
+  if (task.completed || !task.dueDate || !task.dueTime) return null;
+
+  const deadlineMs = getTaskDateTime(task);
+  const minutesLeft = Math.ceil((deadlineMs - now) / 60000);
+  const alertWindowMinutes = getAlertIntervalMinutes(interval);
+
+  if (minutesLeft < 0 || minutesLeft > alertWindowMinutes) return null;
+
+  return {
+    minutesLeft,
+    label: minutesLeft <= 0 ? "Termina agora" : `Faltam ${minutesLeft} min`,
+  };
+}
+
+function unfoldIcsLines(icsText) {
+  return String(icsText)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .reduce((lines, line) => {
+      if (/^[ \t]/.test(line) && lines.length > 0) {
+        lines[lines.length - 1] += line.slice(1);
+      } else {
+        lines.push(line);
+      }
+      return lines;
+    }, []);
+}
+
+function unescapeIcsValue(value = "") {
+  return value
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+
+function parseIcsDate(value = "") {
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})T?(\d{2})?(\d{2})?/);
+  if (!match) return null;
+
+  const [, year, month, day, hour = "00", minute = "00"] = match;
+  return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+}
+
+function readIcsProperty(event, propertyName) {
+  const prefix = propertyName.toUpperCase();
+  const line = event.find((item) => item.toUpperCase().startsWith(prefix));
+  if (!line) return "";
+  return unescapeIcsValue(line.slice(line.indexOf(":") + 1));
+}
+
+function formatScheduleTime(date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function formatScheduleDate(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function getScheduleItemKey(item) {
+  return [
+    item.type,
+    item.title,
+    item.subject,
+    item.day,
+    item.startTime,
+    item.endTime,
+    item.location,
+  ].join("|").toLowerCase();
+}
+
+function parseIcsSchedule(icsText) {
+  const lines = unfoldIcsLines(icsText);
+  const events = [];
+  let currentEvent = null;
+
+  lines.forEach((line) => {
+    if (line === "BEGIN:VEVENT") {
+      currentEvent = [];
+      return;
+    }
+    if (line === "END:VEVENT" && currentEvent) {
+      events.push(currentEvent);
+      currentEvent = null;
+      return;
+    }
+    if (currentEvent) currentEvent.push(line);
+  });
+
+  return events
+    .map((event) => {
+      const summary = readIcsProperty(event, "SUMMARY");
+      const location = readIcsProperty(event, "LOCATION");
+      const description = readIcsProperty(event, "DESCRIPTION");
+      const start = parseIcsDate(readIcsProperty(event, "DTSTART"));
+      const end = parseIcsDate(readIcsProperty(event, "DTEND"));
+      if (!start || !end) return null;
+
+      const cleanSummary = summary || "Aula importada";
+      const parts = cleanSummary.split(/\s[-–]\s/).map((part) => part.trim()).filter(Boolean);
+      const subject = parts[0]?.toLowerCase() === "aula" ? parts[1] : parts[0];
+
+      return {
+        type: "Aula",
+        title: cleanSummary,
+        subject: subject || cleanSummary,
+        day: icsWeekDays[start.getDay()] || "Segunda",
+        date: formatScheduleDate(start),
+        startTime: formatScheduleTime(start),
+        endTime: formatScheduleTime(end),
+        location,
+        notes: description,
+      };
+    })
+    .filter((item) => {
+      if (!item) return false;
+      return item.date >= formatScheduleDate(new Date());
+    })
+    .filter(Boolean);
+}
+
 function App() {
   const [booted, setBooted] = useState(false);
   const [screen, setScreen] = useState("welcome");
@@ -179,12 +324,20 @@ function App() {
   const [accounts, setAccounts] = useState([]);
   const [user, setUser] = useState(initialState.user);
   const [tasks, setTasks] = useState(initialState.tasks);
+  const [scheduleItems, setScheduleItems] = useState(initialState.scheduleItems);
   const [settings, setSettings] = useState(initialState.settings);
+  const [now, setNow] = useState(() => Date.now());
+  const [sentDeadlineAlerts, setSentDeadlineAlerts] = useState(() => {
+    const raw = localStorage.getItem(DEADLINE_ALERTS_SENT_KEY);
+    return raw ? JSON.parse(raw) : {};
+  });
   const [focusMinutes, setFocusMinutes] = useState(25);
+  const [customFocusMinutes, setCustomFocusMinutes] = useState("25");
   const [focusSecondsLeft, setFocusSecondsLeft] = useState(25 * 60);
   const [focusRunning, setFocusRunning] = useState(false);
   const [focusTaskId, setFocusTaskId] = useState(null);
   const [taskFilter, setTaskFilter] = useState("Todas");
+  const [subjectFilter, setSubjectFilter] = useState("Todas");
   const [taskSearch, setTaskSearch] = useState("");
   const [authForm, setAuthForm] = useState({
     name: "",
@@ -206,6 +359,19 @@ function App() {
     notes: "",
     remind: true,
   });
+  const [newScheduleItem, setNewScheduleItem] = useState({
+    type: "Aula",
+    title: "",
+    subject: "Interação Pessoa Computador",
+    day: weekDays[0],
+    startTime: "09:00",
+    endTime: "10:30",
+    location: "",
+    notes: "",
+  });
+  const [scheduleImportUrl, setScheduleImportUrl] = useState("");
+  const [scheduleImportPreview, setScheduleImportPreview] = useState([]);
+  const [scheduleImportStatus, setScheduleImportStatus] = useState("");
   const [profileForm, setProfileForm] = useState({
     degree: "Engenharia Informática - 3º Ano",
   });
@@ -220,6 +386,7 @@ function App() {
         : null;
       setUser(loadedUser);
       setTasks(parsed.tasks ?? []);
+      setScheduleItems(parsed.scheduleItems ?? []);
       const parsedSettings = parsed.settings ?? {};
       setSettings({ ...initialState.settings, ...parsedSettings });
       setScreen(loadedUser ? "dashboard" : "welcome");
@@ -239,8 +406,19 @@ function App() {
 
   useEffect(() => {
     if (!booted) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, settings }));
-  }, [user, tasks, settings, booted]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, scheduleItems, settings }));
+  }, [user, tasks, scheduleItems, settings, booted]);
+
+  useEffect(() => {
+    localStorage.setItem(DEADLINE_ALERTS_SENT_KEY, JSON.stringify(sentDeadlineAlerts));
+  }, [sentDeadlineAlerts]);
+
+  useEffect(() => {
+    if (!settings.deadlineAlerts) return undefined;
+
+    const timer = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, [settings.deadlineAlerts]);
 
   const pendingTasks = useMemo(() => tasks.filter((t) => !t.completed), [tasks]);
   const completedTasks = useMemo(() => tasks.filter((t) => t.completed), [tasks]);
@@ -260,6 +438,7 @@ function App() {
   };
 
   const generateVerificationCode = () => String(Math.floor(100000 + Math.random() * 900000));
+<<<<<<< HEAD
   const isEmailJSConfigured = Boolean(
     EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY
   );
@@ -271,19 +450,21 @@ function App() {
           "EmailJS não configurado. Defina VITE_EMAILJS_SERVICE_ID, VITE_EMAILJS_TEMPLATE_ID e VITE_EMAILJS_PUBLIC_KEY no .env.",
       };
     }
+=======
+  const isSmtpEmailConfigured = Boolean(SMTP_EMAIL_API_URL);
+  const sendValidationEmail = async ({ name, email, verificationCode, type = "validation" }) => {
+    if (!isSmtpEmailConfigured) return false;
+>>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
 
     const payload = {
-      service_id: EMAILJS_SERVICE_ID,
-      template_id: EMAILJS_TEMPLATE_ID,
-      user_id: EMAILJS_PUBLIC_KEY,
-      template_params: {
-        to_name: name,
-        to_email: email,
-        verification_code: verificationCode,
-        login_url: window.location.origin,
-      },
+      name,
+      email,
+      verificationCode,
+      loginUrl: window.location.origin,
+      type,
     };
 
+<<<<<<< HEAD
     try {
       const response = await fetch(EMAILJS_API_URL, {
         method: "POST",
@@ -304,6 +485,15 @@ function App() {
         error: "Falha de rede ao enviar email. Verifique a ligação à internet.",
       };
     }
+=======
+    const response = await fetch(SMTP_EMAIL_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    return response.ok;
+>>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
   };
 
   const semesterProgress = user?.semesterProgress ?? 0;
@@ -330,17 +520,123 @@ function App() {
   const isDarkMode =
     settings.theme === "Escuro" ||
     (settings.theme === "Auto" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+<<<<<<< HEAD
 
+=======
+  const accountToVerify = accounts.find(
+    (account) => account.email === authForm.email.toLowerCase().trim()
+  );
+  const needsVerification = authMode === "login" && accountToVerify && !accountToVerify.isVerified;
+  const accountToReset = accounts.find(
+    (account) => account.email === authForm.email.toLowerCase().trim()
+  );
+  const passwordResetCodeSent = authMode === "reset" && Boolean(accountToReset?.passwordResetCode);
+>>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
 
   const filteredTasks = useMemo(() => {
-    const bySearch = tasks.filter((task) =>
-      task.title.toLowerCase().includes(taskSearch.toLowerCase())
+    const normalizedSearch = taskSearch.toLowerCase().trim();
+    const bySearch = tasks.filter((task) => {
+      const title = task.title.toLowerCase();
+      const subject = task.subject.toLowerCase();
+      return title.includes(normalizedSearch) || subject.includes(normalizedSearch);
+    });
+    const byStatus = bySearch.filter((task) => {
+      if (taskFilter === "Pendentes") return !task.completed;
+      if (taskFilter === "Concluídas") return task.completed;
+      if (taskFilter === "Urgentes") return task.importance === "Alta";
+      return true;
+    });
+    const bySubject = byStatus.filter((task) =>
+      subjectFilter === "Todas" ? true : task.subject === subjectFilter
     );
-    if (taskFilter === "Pendentes") return bySearch.filter((task) => !task.completed);
-    if (taskFilter === "Concluídas") return bySearch.filter((task) => task.completed);
-    if (taskFilter === "Urgentes") return bySearch.filter((task) => task.importance === "Alta");
-    return bySearch;
-  }, [tasks, taskSearch, taskFilter]);
+
+    return [...bySubject].sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      const dateDiff = getTaskDateTime(a) - getTaskDateTime(b);
+      if (dateDiff !== 0) return dateDiff;
+      return getImportanceRank(a.importance) - getImportanceRank(b.importance);
+    });
+  }, [tasks, taskSearch, taskFilter, subjectFilter]);
+
+  const subjectOptions = useMemo(
+    () => ["Todas", ...Array.from(new Set(tasks.map((task) => task.subject).filter(Boolean))).sort()],
+    [tasks]
+  );
+  const scheduleByDay = useMemo(() => {
+    const grouped = Object.fromEntries(weekDays.map((day) => [day, []]));
+
+    scheduleItems.forEach((item) => {
+      const day = weekDays.includes(item.day) ? item.day : weekDays[0];
+      grouped[day].push(item);
+    });
+
+    return Object.entries(grouped)
+      .map(([day, items]) => ({
+        day,
+        items: [...items].sort((a, b) => a.startTime.localeCompare(b.startTime)),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [scheduleItems]);
+  const scheduleGrid = useMemo(() => {
+    const grouped = Object.fromEntries(weekDays.map((day) => [day, []]));
+
+    scheduleItems.forEach((item) => {
+      const day = weekDays.includes(item.day) ? item.day : weekDays[0];
+      grouped[day].push(item);
+    });
+
+    return weekDays.map((day) => ({
+      day,
+      items: [...grouped[day]].sort((a, b) => a.startTime.localeCompare(b.startTime)),
+    }));
+  }, [scheduleItems]);
+  const deadlineAlertTasks = useMemo(() => {
+    if (!settings.deadlineAlerts) return [];
+
+    return pendingTasks
+      .map((task) => ({
+        ...task,
+        deadlineAlert: getDeadlineAlertInfo(task, settings.alertInterval, now),
+      }))
+      .filter((task) => task.deadlineAlert)
+      .sort((a, b) => getTaskDateTime(a) - getTaskDateTime(b));
+  }, [pendingTasks, settings.deadlineAlerts, settings.alertInterval, now]);
+
+  useEffect(() => {
+    if (!settings.deadlineAlerts || deadlineAlertTasks.length === 0) return;
+
+    const getAlertKey = (task) =>
+      `${task.id}:${task.dueDate}:${task.dueTime}:${settings.alertInterval}`;
+    const nextTask = deadlineAlertTasks.find(
+      (task) => !sentDeadlineAlerts[getAlertKey(task)]
+    );
+    if (!nextTask) return;
+
+    const alertKey = getAlertKey(nextTask);
+    const message = `${nextTask.title} termina em ${formatDateLabel(nextTask.dueDate)} às ${nextTask.dueTime}.`;
+    window.setTimeout(() => {
+      setNotification(`Alerta de prazo: ${message}`);
+    }, 0);
+
+    if ("Notification" in window) {
+      const showNotification = () =>
+        new Notification("Alerta de prazo SoftStudy", {
+          body: message,
+        });
+
+      if (Notification.permission === "granted") {
+        showNotification();
+      } else if (Notification.permission === "default") {
+        Notification.requestPermission().then((permission) => {
+          if (permission === "granted") showNotification();
+        });
+      }
+    }
+
+    window.setTimeout(() => {
+      setSentDeadlineAlerts((prev) => ({ ...prev, [alertKey]: true }));
+    }, 0);
+  }, [deadlineAlertTasks, sentDeadlineAlerts, settings.alertInterval, settings.deadlineAlerts]);
 
   useEffect(() => {
     if (pendingTasks.length === 0) {
@@ -551,6 +847,77 @@ function App() {
     }
   };
 
+  const requestPasswordReset = async () => {
+    const email = authForm.email.toLowerCase().trim();
+    const account = accounts.find((a) => a.email === email);
+    if (!email.includes("@")) {
+      alert("Email inválido.");
+      return;
+    }
+    if (!account) {
+      alert("Conta não encontrada.");
+      return;
+    }
+
+    const passwordResetCode = generateVerificationCode();
+    const emailOk = await sendValidationEmail({
+      name: account.name,
+      email: account.email,
+      verificationCode: passwordResetCode,
+      type: "password-reset",
+    });
+
+    if (emailOk) {
+      setAccounts((prev) =>
+        prev.map((existing) =>
+          existing.email === account.email ? { ...existing, passwordResetCode } : existing
+        )
+      );
+      alert(`Código de recuperação enviado para ${account.email}.`);
+      setNotification(`Código de recuperação enviado para ${account.email}.`);
+    } else {
+      alert("Não foi possível enviar o email de recuperação. Tente novamente mais tarde.");
+      setNotification("Falha ao enviar email de recuperação.");
+    }
+  };
+
+  const confirmPasswordReset = () => {
+    const email = authForm.email.toLowerCase().trim();
+    const account = accounts.find((a) => a.email === email);
+    if (!account) {
+      alert("Conta não encontrada.");
+      return;
+    }
+    if (!authForm.verificationCode || authForm.verificationCode !== account.passwordResetCode) {
+      alert("Código de recuperação inválido.");
+      return;
+    }
+    if (authForm.password.length < 8) {
+      alert("A nova palavra-passe deve ter pelo menos 8 caracteres.");
+      return;
+    }
+    if (authForm.password !== authForm.confirmPassword) {
+      alert("As palavras-passe não coincidem.");
+      return;
+    }
+
+    setAccounts((prev) =>
+      prev.map((existing) =>
+        existing.email === account.email
+          ? { ...existing, password: authForm.password, passwordResetCode: null }
+          : existing
+      )
+    );
+    setAuthMode("login");
+    setNotification("Palavra-passe alterada com sucesso. Já pode entrar.");
+    setAuthForm((prev) => ({
+      ...prev,
+      password: "",
+      confirmPassword: "",
+      verificationCode: "",
+    }));
+  };
+
   const logout = () => {
     setUser(null);
     setScreen("welcome");
@@ -587,6 +954,117 @@ function App() {
     setNewTask((prev) => ({ ...prev, title: "", notes: "" }));
   };
 
+  const addScheduleItem = () => {
+    if (!newScheduleItem.title.trim()) {
+      alert("O nome da aula ou atividade é obrigatório.");
+      return;
+    }
+    if (newScheduleItem.endTime <= newScheduleItem.startTime) {
+      alert("A hora de fim deve ser posterior à hora de início.");
+      return;
+    }
+
+    const item = {
+      id: crypto.randomUUID(),
+      ...newScheduleItem,
+      title: newScheduleItem.title.trim(),
+      subject: newScheduleItem.subject.trim(),
+      location: newScheduleItem.location.trim(),
+      notes: newScheduleItem.notes.trim(),
+    };
+
+    setScheduleItems((prev) => [...prev, item]);
+    setNewScheduleItem((prev) => ({ ...prev, title: "", location: "", notes: "" }));
+  };
+
+  const previewImportedScheduleItems = (items, sourceLabel) => {
+    const uniqueItems = Array.from(
+      new Map(items.map((item) => [getScheduleItemKey(item), item])).values()
+    );
+
+    if (!uniqueItems.length) {
+      setScheduleImportPreview([]);
+      setScheduleImportStatus("Não foram encontrados eventos no horário importado.");
+      return;
+    }
+
+    setScheduleImportPreview(uniqueItems);
+    setScheduleImportStatus(
+      `${uniqueItems.length} evento(s) únicos encontrados em ${sourceLabel}. Clique em "Guardar eventos importados" para visualizar na grelha.`
+    );
+  };
+
+  const importScheduleFromUrl = async () => {
+    const url = scheduleImportUrl.trim();
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      alert("Cole um URL válido do horário.");
+      return;
+    }
+
+    try {
+      setScheduleImportStatus("A importar horário por URL...");
+      const response = await fetch(SCHEDULE_IMPORT_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("O servidor de importação não respondeu em JSON. Confirme que o backend está a correr com npm run dev:server.");
+      }
+
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || "Não foi possível importar o horário.");
+      }
+
+      previewImportedScheduleItems(result.items || [], "URL");
+    } catch (error) {
+      setScheduleImportStatus(error.message);
+    }
+  };
+
+  const importScheduleFromFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      previewImportedScheduleItems(parseIcsSchedule(text), file.name);
+    } catch (error) {
+      setScheduleImportStatus(error.message);
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const saveImportedScheduleItems = () => {
+    if (!scheduleImportPreview.length) return;
+
+    const existingKeys = new Set(scheduleItems.map(getScheduleItemKey));
+    const newItems = [];
+
+    scheduleImportPreview.forEach((item) => {
+      const key = getScheduleItemKey(item);
+      if (existingKeys.has(key)) return;
+      existingKeys.add(key);
+      newItems.push({ ...item, id: crypto.randomUUID(), imported: true });
+    });
+
+    if (!newItems.length) {
+      setScheduleImportStatus("Todos os eventos importados já existem no horário.");
+      return;
+    }
+
+    setScheduleItems((prev) => [...prev, ...newItems]);
+    setScheduleImportPreview([]);
+    setScheduleImportStatus(`${newItems.length} evento(s) adicionados ao horário. Veja-os na grelha semanal abaixo.`);
+  };
+
+  const deleteScheduleItem = (id) => {
+    setScheduleItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
   const toggleTask = (id) => {
     setTasks((prev) =>
       prev.map((task) => {
@@ -603,7 +1081,13 @@ function App() {
     setFocusSecondsLeft(focusMinutes * 60);
   };
 
-  const setPreset = (value) => {
+  const applyCustomFocusMinutes = () => {
+    const value = Number(customFocusMinutes);
+    if (!Number.isInteger(value) || value < 1 || value > 180) {
+      alert("Escolha um tempo entre 1 e 180 minutos.");
+      return;
+    }
+
     setFocusMinutes(value);
     setFocusSecondsLeft(value * 60);
     setFocusRunning(false);
@@ -618,7 +1102,7 @@ function App() {
 
   if (!booted) return <div className="app-container loading">A carregar...</div>;
 
-  const showBottomNav = ["dashboard", "tasks", "focus", "settings", "profile"].includes(screen);
+  const showBottomNav = ["dashboard", "tasks", "focus", "schedule", "settings", "profile"].includes(screen);
 
   return (
     <div className={`app-container ${isDarkMode ? "dark" : ""}`} style={{ fontSize: `${settings.textSize}px` }}>
@@ -649,8 +1133,20 @@ function App() {
             <img className="logo-image small" src={softStudyLogo} alt="SoftStudy" />
           </header>
           <div className="auth-content">
-            <h2>{authMode === "register" ? "Bem Vindo à SoftStudy" : "Bem Vindo de volta!"}</h2>
-            <p className="muted">{authMode === "register" ? "Preencha os dados para começar" : "Faça login para continuar."}</p>
+            <h2>
+              {authMode === "register"
+                ? "Bem Vindo à SoftStudy"
+                : authMode === "reset"
+                  ? "Recuperar palavra-passe"
+                  : "Bem Vindo de volta!"}
+            </h2>
+            <p className="muted">
+              {authMode === "register"
+                ? "Preencha os dados para começar"
+                : authMode === "reset"
+                  ? "Indique o email da conta para receber um código."
+                  : "Faça login para continuar."}
+            </p>
             {notification && <p className="muted info-text">{notification}</p>}
             {authMode === "register" && !registerAwaitingCode && (
               <input
@@ -666,6 +1162,7 @@ function App() {
               value={authForm.email}
               onChange={(e) => setAuthForm((p) => ({ ...p, email: e.target.value }))}
             />
+<<<<<<< HEAD
             {authMode === "register" && registerAwaitingCode ? (
               <input
                 className="input"
@@ -683,16 +1180,51 @@ function App() {
               />
             )}
             {authMode === "register" && !registerAwaitingCode && (
+=======
+            {(authMode !== "reset" || passwordResetCodeSent) && (
+>>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
               <input
                 className="input"
                 type="password"
-                placeholder="Confirmar palavra-passe"
+                placeholder={authMode === "reset" ? "Nova palavra-passe" : "Mínimo 8 caracteres"}
+                value={authForm.password}
+                onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
+              />
+            )}
+            {(authMode === "register" || passwordResetCodeSent) && (
+              <input
+                className="input"
+                type="password"
+                placeholder={
+                  authMode === "reset" ? "Confirmar nova palavra-passe" : "Confirmar palavra-passe"
+                }
                 value={authForm.confirmPassword}
                 onChange={(e) => setAuthForm((p) => ({ ...p, confirmPassword: e.target.value }))}
               />
             )}
+<<<<<<< HEAD
 
             {authMode === "register" && !registerAwaitingCode && (
+=======
+            {((authMode === "login" && needsVerification) || passwordResetCodeSent) && (
+              <>
+                <input
+                  className="input"
+                  placeholder={
+                    authMode === "reset" ? "Código de recuperação" : "Código de validação"
+                  }
+                  value={authForm.verificationCode}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, verificationCode: e.target.value }))}
+                />
+                {authMode === "login" && (
+                  <button className="btn ghost" onClick={resendVerificationCode}>
+                    Reenviar Código
+                  </button>
+                )}
+              </>
+            )}
+            {authMode === "register" && (
+>>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
               <>
                 <label className="input-label">Universidade</label>
                 <select
@@ -728,6 +1260,7 @@ function App() {
             )}
           </div>
           <div className="actions-stack">
+<<<<<<< HEAD
             <button className="btn primary" onClick={onAuthSubmit}>
               {authMode === "register"
                 ? registerAwaitingCode
@@ -738,6 +1271,41 @@ function App() {
             {authMode === "register" && registerAwaitingCode && (
               <button className="btn ghost" onClick={resendVerificationCode}>
                 Reenviar Código
+=======
+            <button
+              className="btn primary"
+              onClick={
+                authMode === "reset"
+                  ? passwordResetCodeSent
+                    ? confirmPasswordReset
+                    : requestPasswordReset
+                  : onAuthSubmit
+              }
+            >
+              {authMode === "register"
+                ? "Criar Conta"
+                : authMode === "reset"
+                  ? passwordResetCodeSent
+                    ? "Alterar Palavra-passe"
+                    : "Enviar Código"
+                  : "Entrar"}
+            </button>
+            {authMode === "login" && (
+              <button
+                className="link-button"
+                onClick={() => {
+                  setNotification("");
+                  setAuthMode("reset");
+                  setAuthForm((prev) => ({
+                    ...prev,
+                    password: "",
+                    confirmPassword: "",
+                    verificationCode: "",
+                  }));
+                }}
+              >
+                Esqueceu-se da palavra-passe?
+>>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
               </button>
             )}
             <button
@@ -746,9 +1314,17 @@ function App() {
                 setNotification("");
                 setRegisterAwaitingCode(false);
                 setAuthMode((m) => (m === "login" ? "register" : "login"));
+                setAuthForm((prev) => ({
+                  ...prev,
+                  password: "",
+                  confirmPassword: "",
+                  verificationCode: "",
+                }));
               }}
             >
-              {authMode === "register" ? "Já tem conta? Entrar" : "Ainda não tem conta? Criar conta"}
+              {authMode === "register" || authMode === "reset"
+                ? "Já tem conta? Entrar"
+                : "Ainda não tem conta? Criar conta"}
             </button>
           </div>
         </section>
@@ -793,6 +1369,10 @@ function App() {
               <strong>Timer Foco</strong>
               <span>25:00 min</span>
             </button>
+            <button className="card action" onClick={() => setScreen("schedule")}>
+              <strong>Horário</strong>
+              <span>Aulas e atividades</span>
+            </button>
           </div>
           <div className="top-row">
             <h3>Próximas Tarefas</h3>
@@ -813,10 +1393,11 @@ function App() {
           <h2>Minhas Tarefas</h2>
           <input
             className="input"
-            placeholder="Pesquisar tarefas..."
+            placeholder="Pesquisar por tarefa ou cadeira..."
             value={taskSearch}
             onChange={(e) => setTaskSearch(e.target.value)}
           />
+          <p className="muted">Organizadas automaticamente por prazo e importância.</p>
           <div className="chips">
             {["Todas", "Pendentes", "Concluídas", "Urgentes"].map((filter) => (
               <button
@@ -825,6 +1406,18 @@ function App() {
                 onClick={() => setTaskFilter(filter)}
               >
                 {filter}
+              </button>
+            ))}
+          </div>
+          <label className="input-label">Filtrar por cadeira</label>
+          <div className="chips">
+            {subjectOptions.map((subject) => (
+              <button
+                key={subject}
+                className={`chip ${subjectFilter === subject ? "active" : ""}`}
+                onClick={() => setSubjectFilter(subject)}
+              >
+                {subject}
               </button>
             ))}
           </div>
@@ -898,11 +1491,198 @@ function App() {
             <button className="btn primary" onClick={toggleFocusRunning}>{focusRunning ? "Pausar" : "Iniciar"}</button>
             <button className="btn ghost" onClick={() => setScreen("tasks")}>Tarefas</button>
           </div>
-          <div className="chips">
-            {[25, 45, 60].map((v) => (
-              <button key={v} className={`chip ${focusMinutes === v ? "active" : ""}`} onClick={() => setPreset(v)}>
-                {v}m
-              </button>
+          <div className="card">
+            <label className="input-label">Tempo personalizado em minutos</label>
+            <input
+              className="input"
+              min="1"
+              max="180"
+              placeholder="Ex: 30"
+              type="number"
+              value={customFocusMinutes}
+              onChange={(e) => setCustomFocusMinutes(e.target.value)}
+            />
+            <button className="btn ghost" onClick={applyCustomFocusMinutes}>
+              Aplicar tempo
+            </button>
+          </div>
+        </section>
+      )}
+
+      {screen === "schedule" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <div>
+              <h2>Horário</h2>
+              <p className="muted">Importe o horário escolar e adicione atividades externas.</p>
+            </div>
+            <button className="small-link" onClick={() => setScreen("dashboard")}>Voltar</button>
+          </div>
+
+          <div className="card">
+            <h3>Importar horário escolar</h3>
+            <p className="muted">
+              Cole o URL de sincronização do Inforestudante ou importe um ficheiro .ics descarregado.
+            </p>
+            <label className="input-label">URL do horário</label>
+            <input
+              className="input"
+              placeholder="https://inforestudante.utad.pt/nonio/util/sincronizaHorarioNonio.do?..."
+              value={scheduleImportUrl}
+              onChange={(e) => setScheduleImportUrl(e.target.value)}
+            />
+            <button className="btn ghost" onClick={importScheduleFromUrl}>
+              Importar por URL
+            </button>
+            <label className="input-label">Ou importar ficheiro .ics</label>
+            <input className="input" type="file" accept=".ics,text/calendar" onChange={importScheduleFromFile} />
+            {scheduleImportStatus && <p className="muted info-text">{scheduleImportStatus}</p>}
+            {scheduleImportPreview.length > 0 && (
+              <>
+                <h4>Pré-visualização</h4>
+                {scheduleImportPreview.slice(0, 5).map((item) => (
+                  <div key={getScheduleItemKey(item)} className="card task">
+                    <small>{item.day} · {item.startTime} - {item.endTime}</small>
+                    <h4>{item.title}</h4>
+                    <p className="muted">
+                      {item.subject}
+                      {item.location ? ` · ${item.location}` : ""}
+                    </p>
+                  </div>
+                ))}
+                {scheduleImportPreview.length > 5 && (
+                  <p className="muted">Mais {scheduleImportPreview.length - 5} evento(s) na importação.</p>
+                )}
+                <button className="btn primary" onClick={saveImportedScheduleItems}>
+                  Guardar eventos importados e mostrar no horário
+                </button>
+                <button className="btn ghost" onClick={() => setScheduleImportPreview([])}>
+                  Cancelar importação
+                </button>
+              </>
+            )}
+          </div>
+
+          <div className="card">
+            <h3>Adicionar atividade manual</h3>
+            <label className="input-label">Tipo</label>
+            <div className="chips">
+              {["Aula", "Atividade externa"].map((type) => (
+                <button
+                  key={type}
+                  className={`chip ${newScheduleItem.type === type ? "active" : ""}`}
+                  onClick={() => setNewScheduleItem((prev) => ({ ...prev, type }))}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+            <label className="input-label">Nome</label>
+            <input
+              className="input"
+              placeholder="Ex: Teórica de IPC ou Ginásio"
+              value={newScheduleItem.title}
+              onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, title: e.target.value }))}
+            />
+            <label className="input-label">Cadeira ou área</label>
+            <input
+              className="input"
+              placeholder="Ex: Interação Pessoa Computador"
+              value={newScheduleItem.subject}
+              onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, subject: e.target.value }))}
+            />
+            <div className="grid-2">
+              <div>
+                <label className="input-label">Dia</label>
+                <select
+                  className="input"
+                  value={newScheduleItem.day}
+                  onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, day: e.target.value }))}
+                >
+                  {weekDays.map((day) => (
+                    <option key={day}>{day}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="input-label">Local</label>
+                <input
+                  className="input"
+                  placeholder="Sala, campus ou local"
+                  value={newScheduleItem.location}
+                  onChange={(e) =>
+                    setNewScheduleItem((prev) => ({ ...prev, location: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+            <div className="grid-2">
+              <div>
+                <label className="input-label">Início</label>
+                <input
+                  className="input"
+                  type="time"
+                  value={newScheduleItem.startTime}
+                  onChange={(e) =>
+                    setNewScheduleItem((prev) => ({ ...prev, startTime: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="input-label">Fim</label>
+                <input
+                  className="input"
+                  type="time"
+                  value={newScheduleItem.endTime}
+                  onChange={(e) =>
+                    setNewScheduleItem((prev) => ({ ...prev, endTime: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+            <label className="input-label">Notas</label>
+            <textarea
+              className="input"
+              rows={3}
+              placeholder="Ex: levar portátil, material, grupo de trabalho..."
+              value={newScheduleItem.notes}
+              onChange={(e) => setNewScheduleItem((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+            <button className="btn primary" onClick={addScheduleItem}>
+              Adicionar ao Horário
+            </button>
+          </div>
+
+          <h3>Vista semanal</h3>
+          {scheduleByDay.length === 0 && (
+            <p className="muted">Ainda não há eventos guardados. Importe o horário ou adicione uma atividade.</p>
+          )}
+          <div className="schedule-grid">
+            {scheduleGrid.map((group) => (
+              <div key={group.day} className="schedule-day">
+                <strong>{group.day}</strong>
+                {group.items.length === 0 ? (
+                  <p className="muted">Sem eventos</p>
+                ) : (
+                  group.items.map((item) => (
+                    <div key={item.id} className="schedule-block">
+                          <small>
+                            {item.date ? `${formatDateLabel(item.date)} · ` : ""}
+                            {item.startTime} - {item.endTime}
+                          </small>
+                      <h4>{item.title}</h4>
+                      <p>
+                        {item.type} · {item.subject}
+                        {item.location ? ` · ${item.location}` : ""}
+                      </p>
+                      {item.notes && <p className="muted">{item.notes}</p>}
+                      <button className="btn mini ghost" onClick={() => deleteScheduleItem(item.id)}>
+                        Remover
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             ))}
           </div>
         </section>
@@ -934,13 +1714,14 @@ function App() {
               <span className="tile-icon">🔉</span>
               <div>
                 <strong>Intervalos de Alerta</strong>
-                <p className="muted">30 min, 1h e 2h antes</p>
+                <p className="muted">Escolha quanto tempo antes do prazo quer ser avisado</p>
               </div>
             </div>
             <select className="input" value={settings.alertInterval} onChange={(e) => setSettings((s) => ({ ...s, alertInterval: e.target.value }))}>
               <option>30 min</option>
               <option>1 h</option>
               <option>2 h</option>
+              <option>24 h</option>
             </select>
           </div>
 
@@ -1008,15 +1789,20 @@ function App() {
             <h2>{"Notifica\u00E7\u00F5es"}</h2>
             <button className="small-link" onClick={() => setScreen("dashboard")}>Fechar</button>
           </div>
-          {pendingTasks.length === 0 ? (
+          {!settings.deadlineAlerts ? (
+            <div className="card task">
+              <h4>Alertas desligados</h4>
+              <p className="muted">Ative os alertas de prazos nas configurações para receber lembretes.</p>
+            </div>
+          ) : deadlineAlertTasks.length === 0 ? (
             <div className="card task">
               <h4>Sem alertas pendentes</h4>
-              <p className="muted">Cria tarefas com prazo para receberes lembretes aqui.</p>
+              <p className="muted">Não há tarefas a terminar dentro do intervalo de {settings.alertInterval}.</p>
             </div>
           ) : (
-            pendingTasks.slice(0, 8).map((task) => (
+            deadlineAlertTasks.slice(0, 8).map((task) => (
               <div key={task.id} className="card task">
-                <small>Prazo próximo</small>
+                <small>Prazo próximo · {task.deadlineAlert.label}</small>
                 <h4>{task.title}</h4>
                 <p className="muted">{task.subject} · {formatDateLabel(task.dueDate)} às {task.dueTime}</p>
                 <button className="btn mini primary" onClick={() => setScreen("tasks")}>Ver tarefa</button>
@@ -1126,6 +1912,7 @@ function App() {
           <button className={screen === "dashboard" ? "active" : ""} onClick={() => setScreen("dashboard")}><span>⌂</span>Painel</button>
           <button className={screen === "tasks" || screen === "newTask" ? "active" : ""} onClick={() => setScreen("tasks")}><span>☷</span>Tarefas</button>
           <button className={screen === "focus" ? "active" : ""} onClick={() => setScreen("focus")}><span>◴</span>Foco</button>
+          <button className={screen === "schedule" ? "active" : ""} onClick={() => setScreen("schedule")}><span>▦</span>Horário</button>
           <button className={screen === "settings" ? "active" : ""} onClick={() => setScreen("settings")}><span>⚙</span>Ajustes</button>
         </nav>
       )}
