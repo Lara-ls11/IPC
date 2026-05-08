@@ -331,6 +331,8 @@ function App() {
   const [scheduleImportPreview, setScheduleImportPreview] = useState([]);
   const [scheduleImportStatus, setScheduleImportStatus] = useState("");
   const [profileForm, setProfileForm] = useState({
+    name: user?.name || "",
+    email: user?.email || "",
     degree: "Engenharia Informática - 3º Ano",
   });
 
@@ -366,6 +368,18 @@ function App() {
   useEffect(() => {
     localStorage.setItem(DEADLINE_ALERTS_SENT_KEY, JSON.stringify(sentDeadlineAlerts));
   }, [sentDeadlineAlerts]);
+
+  useEffect(() => {
+    setProfileForm((prev) => ({
+      ...prev,
+      name: user?.name || "",
+      email: user?.email || "",
+    }));
+  }, [user]);
+
+  useEffect(() => {
+    document.body.style.fontSize = `${settings.textSize}px`;
+  }, [settings.textSize]);
 
   useEffect(() => {
     if (!settings.deadlineAlerts) return undefined;
@@ -1490,7 +1504,10 @@ function App() {
 
       {screen === "settings" && (
         <section className="screen scroll">
-          <h2 className="settings-title">Configurações</h2>
+          <div className="top-row">
+            <h2>Configurações</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Voltar</button>
+          </div>
           <div className="settings-group-title">NOTIFICAÇÕES</div>
           <div className="card settings-row tile">
             <div className="tile-main">
@@ -1626,13 +1643,95 @@ function App() {
           </div>
           <h4>Atalhos Rápidos</h4>
           <div className="grid-2">
-            <button className="card action">🔔 Notificações</button>
-            <button className="card action">⚙️ Personalização</button>
-            <button className="card action">🌐 Idioma</button>
-            <button className="card action">🕘 Histórico</button>
+            <button className="card action" onClick={() => setScreen("notifications")}>🔔 Notificações</button>
+            <button className="card action" onClick={() => setScreen("settings")}>⚙️ Personalização</button>
+            <button className="card action" onClick={() => setScreen("language")}>🌐 Idioma</button>
+            <button className="card action" onClick={() => setScreen("history")}>🕘 Histórico</button>
           </div>
-          <button className="btn primary" onClick={() => setProfileForm((prev) => ({ ...prev }))}>Editar Perfil</button>
+          <button className="btn primary" onClick={() => setScreen("editProfile")}>Editar Perfil</button>
           <button className="btn danger" onClick={logout}>Terminar Sessão</button>
+        </section>
+      )}
+
+      {screen === "editProfile" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <h2>Editar Perfil</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Cancelar</button>
+          </div>
+          <div className="card">
+            <label className="input-label">Nome</label>
+            <input
+              className="input"
+              value={profileForm.name || user?.name || ""}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, name: e.target.value }))}
+            />
+            <label className="input-label">Email</label>
+            <input
+              className="input"
+              value={profileForm.email || user?.email || ""}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, email: e.target.value }))}
+            />
+            <label className="input-label">Curso</label>
+            <select
+              className="input"
+              value={profileForm.degree || ""}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, degree: e.target.value }))}
+            >
+              <option value="Engenharia Informática - 3º Ano">Engenharia Informática - 3º Ano</option>
+              <option value="Ciência de Dados - 2º Ano">Ciência de Dados - 2º Ano</option>
+              <option value="Engenharia de Telecomunicações - 1º Ano">Engenharia de Telecomunicações - 1º Ano</option>
+            </select>
+            <button className="btn primary" onClick={() => {
+              // Atualizar user com os novos valores
+              setUser((prev) => ({
+                ...prev,
+                name: profileForm.name || prev.name,
+                email: profileForm.email || prev.email,
+              }));
+              setScreen("profile");
+            }}>Guardar Alterações</button>
+          </div>
+        </section>
+      )}
+
+      {screen === "language" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <h2>Idioma</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Voltar</button>
+          </div>
+          <div className="card">
+            <p className="muted">Selecione o idioma da aplicação:</p>
+            <button className="btn primary">Português (PT)</button>
+            <button className="btn ghost">English (EN)</button>
+            <button className="btn ghost">Español (ES)</button>
+            <button className="btn ghost">Français (FR)</button>
+            <button className="btn ghost">Deutsch (DE)</button>
+            <p className="muted small">Nota: Apenas português está disponível atualmente.</p>
+          </div>
+        </section>
+      )}
+
+      {screen === "history" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <h2>Histórico</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Voltar</button>
+          </div>
+          <div className="card">
+            <h4>Tarefas Concluídas</h4>
+            {tasks.filter((t) => t.completed).length === 0 ? (
+              <p className="muted">Nenhuma tarefa concluída</p>
+            ) : (
+              tasks.filter((t) => t.completed).slice(0, 10).map((task) => (
+                <div key={task.id} className="task-item">
+                  <strong>{task.title}</strong>
+                  <small>{task.subject} · Concluída em {new Date(task.completedAt || task.createdAt).toLocaleDateString("pt-PT")}</small>
+                </div>
+              ))
+            )}
+          </div>
         </section>
       )}
 
