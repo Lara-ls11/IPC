@@ -4,6 +4,7 @@ import softStudyWordmark from "../Logosótexto.png";
 
 const STORAGE_KEY = "softstudy:web:v1";
 const ACCOUNTS_KEY = "softstudy:web:accounts:v1";
+const DEADLINE_ALERTS_SENT_KEY = "softstudy:web:deadline-alerts-sent:v1";
 const SMTP_EMAIL_API_URL =
   import.meta.env.VITE_SMTP_EMAIL_API_URL || "http://localhost:3001/api/send-validation-email";
 
@@ -137,6 +138,25 @@ function getImportanceRank(importance) {
   return { Alta: 0, Média: 1, Baixa: 2 }[importance] ?? 3;
 }
 
+function getAlertIntervalMinutes(interval) {
+  return { "30 min": 30, "1 h": 60, "2 h": 120, "24 h": 1440 }[interval] ?? 30;
+}
+
+function getDeadlineAlertInfo(task, interval, now) {
+  if (task.completed || !task.dueDate || !task.dueTime) return null;
+
+  const deadlineMs = getTaskDateTime(task);
+  const minutesLeft = Math.ceil((deadlineMs - now) / 60000);
+  const alertWindowMinutes = getAlertIntervalMinutes(interval);
+
+  if (minutesLeft < 0 || minutesLeft > alertWindowMinutes) return null;
+
+  return {
+    minutesLeft,
+    label: minutesLeft <= 0 ? "Termina agora" : `Faltam ${minutesLeft} min`,
+  };
+}
+
 function App() {
   const [booted, setBooted] = useState(false);
   const [screen, setScreen] = useState("welcome");
@@ -145,6 +165,11 @@ function App() {
   const [user, setUser] = useState(initialState.user);
   const [tasks, setTasks] = useState(initialState.tasks);
   const [settings, setSettings] = useState(initialState.settings);
+  const [now, setNow] = useState(() => Date.now());
+  const [sentDeadlineAlerts, setSentDeadlineAlerts] = useState(() => {
+    const raw = localStorage.getItem(DEADLINE_ALERTS_SENT_KEY);
+    return raw ? JSON.parse(raw) : {};
+  });
   const [focusMinutes, setFocusMinutes] = useState(25);
   const [customFocusMinutes, setCustomFocusMinutes] = useState("25");
   const [focusSecondsLeft, setFocusSecondsLeft] = useState(25 * 60);
@@ -203,6 +228,17 @@ function App() {
     if (!booted) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, settings }));
   }, [user, tasks, settings, booted]);
+
+  useEffect(() => {
+    localStorage.setItem(DEADLINE_ALERTS_SENT_KEY, JSON.stringify(sentDeadlineAlerts));
+  }, [sentDeadlineAlerts]);
+
+  useEffect(() => {
+    if (!settings.deadlineAlerts) return undefined;
+
+    const timer = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, [settings.deadlineAlerts]);
 
   const pendingTasks = useMemo(() => tasks.filter((t) => !t.completed), [tasks]);
   const clampProgress = (value) => Math.min(100, Math.max(0, value));
@@ -304,6 +340,53 @@ function App() {
     () => ["Todas", ...Array.from(new Set(tasks.map((task) => task.subject).filter(Boolean))).sort()],
     [tasks]
   );
+  const deadlineAlertTasks = useMemo(() => {
+    if (!settings.deadlineAlerts) return [];
+
+    return pendingTasks
+      .map((task) => ({
+        ...task,
+        deadlineAlert: getDeadlineAlertInfo(task, settings.alertInterval, now),
+      }))
+      .filter((task) => task.deadlineAlert)
+      .sort((a, b) => getTaskDateTime(a) - getTaskDateTime(b));
+  }, [pendingTasks, settings.deadlineAlerts, settings.alertInterval, now]);
+
+  useEffect(() => {
+    if (!settings.deadlineAlerts || deadlineAlertTasks.length === 0) return;
+
+    const getAlertKey = (task) =>
+      `${task.id}:${task.dueDate}:${task.dueTime}:${settings.alertInterval}`;
+    const nextTask = deadlineAlertTasks.find(
+      (task) => !sentDeadlineAlerts[getAlertKey(task)]
+    );
+    if (!nextTask) return;
+
+    const alertKey = getAlertKey(nextTask);
+    const message = `${nextTask.title} termina em ${formatDateLabel(nextTask.dueDate)} às ${nextTask.dueTime}.`;
+    window.setTimeout(() => {
+      setNotification(`Alerta de prazo: ${message}`);
+    }, 0);
+
+    if ("Notification" in window) {
+      const showNotification = () =>
+        new Notification("Alerta de prazo SoftStudy", {
+          body: message,
+        });
+
+      if (Notification.permission === "granted") {
+        showNotification();
+      } else if (Notification.permission === "default") {
+        Notification.requestPermission().then((permission) => {
+          if (permission === "granted") showNotification();
+        });
+      }
+    }
+
+    window.setTimeout(() => {
+      setSentDeadlineAlerts((prev) => ({ ...prev, [alertKey]: true }));
+    }, 0);
+  }, [deadlineAlertTasks, sentDeadlineAlerts, settings.alertInterval, settings.deadlineAlerts]);
 
   const focusTask = pendingTasks[0];
   const mm = String(Math.floor(focusSecondsLeft / 60)).padStart(2, "0");
@@ -972,13 +1055,14 @@ function App() {
               <span className="tile-icon">🔉</span>
               <div>
                 <strong>Intervalos de Alerta</strong>
-                <p className="muted">30 min, 1h e 2h antes</p>
+                <p className="muted">Escolha quanto tempo antes do prazo quer ser avisado</p>
               </div>
             </div>
             <select className="input" value={settings.alertInterval} onChange={(e) => setSettings((s) => ({ ...s, alertInterval: e.target.value }))}>
               <option>30 min</option>
               <option>1 h</option>
               <option>2 h</option>
+              <option>24 h</option>
             </select>
           </div>
 
@@ -1036,15 +1120,20 @@ function App() {
             <h2>Notificações</h2>
             <button className="small-link" onClick={() => setScreen("dashboard")}>Fechar</button>
           </div>
-          {pendingTasks.length === 0 ? (
+          {!settings.deadlineAlerts ? (
+            <div className="card task">
+              <h4>Alertas desligados</h4>
+              <p className="muted">Ative os alertas de prazos nas configurações para receber lembretes.</p>
+            </div>
+          ) : deadlineAlertTasks.length === 0 ? (
             <div className="card task">
               <h4>Sem alertas pendentes</h4>
-              <p className="muted">Cria tarefas com prazo para receberes lembretes aqui.</p>
+              <p className="muted">Não há tarefas a terminar dentro do intervalo de {settings.alertInterval}.</p>
             </div>
           ) : (
-            pendingTasks.slice(0, 8).map((task) => (
+            deadlineAlertTasks.slice(0, 8).map((task) => (
               <div key={task.id} className="card task">
-                <small>Prazo próximo</small>
+                <small>Prazo próximo · {task.deadlineAlert.label}</small>
                 <h4>{task.title}</h4>
                 <p className="muted">{task.subject} · {formatDateLabel(task.dueDate)} às {task.dueTime}</p>
                 <button className="btn mini primary" onClick={() => setScreen("tasks")}>Ver tarefa</button>
