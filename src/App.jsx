@@ -17,6 +17,8 @@ const initialState = {
     alertInterval: "30 min",
     theme: "Auto",
     textSize: 16,
+    language: "Português",
+    screenReader: false,
   },
 };
 
@@ -89,10 +91,43 @@ const courseOptions = [
   "Engenharia Civil",
   "Engenharia Biomédica",
   "Engenharia Química",
+  "Engenharia de Gestão Industrial",
+  "Medicina Veterinária",
+  "Assessoria e Tradução",
+  "Comércio Internacional",
+  "Enologia",
+  "Agronomia",
+  "Arquitetura",
+  "Engenharia Zootécnica",
+  "Ciências Agrárias",
+  "Ciências da Comunicação",
+  "Ciências do Desporto",
+  "Desporto",
+  "Ciências da Educação",
+  "Cinema",
+  "Comunicação e multimédia",
+  "Criminologia",
+  "Design Sustentável",
+  "Design de Comunicação",
+  "Direito",
+  "Solicitadoria",
+  "Bioengenharia",
+  "Bioinformática",
+  "Biologia",
+  "Biologia e Geologia",
+  "Biologia Marinha",
+  "Bioquímica",
+  "Biotecnologia",
+  "Enfermagem e Reabilitação",
+  "Engenharia Aeroespacial",
+  "Engenharia do Ambiente",
+  "Engenharia Física",
+  "Estudos Europeus",
   "Medicina",
   "Enfermagem",
+  "Genética e Biotecnologia",
   "Ciências Farmacêuticas",
-  "Nutrição",
+  "Ciências da Nutrição",
   "Tecnologias de Informação",
   "Automação e Robótica",
   "Contabilidade",
@@ -112,6 +147,11 @@ const courseOptions = [
   "Guias de Natureza",
   "Arquitetura",
   "Design",
+  "Filosofia",
+  "Física",
+  "Filosofia",
+  "Gastronomia",
+  "Línguas e Literaturas Modernas",
 ];
 const yearOptions = [
   "1.º Ano",
@@ -135,6 +175,7 @@ function App() {
   const [booted, setBooted] = useState(false);
   const [screen, setScreen] = useState("welcome");
   const [authMode, setAuthMode] = useState("login");
+  const [registerAwaitingCode, setRegisterAwaitingCode] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [user, setUser] = useState(initialState.user);
   const [tasks, setTasks] = useState(initialState.tasks);
@@ -142,6 +183,7 @@ function App() {
   const [focusMinutes, setFocusMinutes] = useState(25);
   const [focusSecondsLeft, setFocusSecondsLeft] = useState(25 * 60);
   const [focusRunning, setFocusRunning] = useState(false);
+  const [focusTaskId, setFocusTaskId] = useState(null);
   const [taskFilter, setTaskFilter] = useState("Todas");
   const [taskSearch, setTaskSearch] = useState("");
   const [authForm, setAuthForm] = useState({
@@ -178,13 +220,17 @@ function App() {
         : null;
       setUser(loadedUser);
       setTasks(parsed.tasks ?? []);
-      setSettings(parsed.settings ?? initialState.settings);
+      const parsedSettings = parsed.settings ?? {};
+      setSettings({ ...initialState.settings, ...parsedSettings });
       setScreen(loadedUser ? "dashboard" : "welcome");
     }
     if (accountsRaw) {
       const parsedAccounts = JSON.parse(accountsRaw).map((account) => ({
         ...account,
         semesterProgress: account.semesterProgress ?? 0,
+        isVerified: account.isVerified ?? true,
+        verificationCode: account.verificationCode ?? "",
+        verificationEmailSent: account.verificationEmailSent ?? true,
       }));
       setAccounts(parsedAccounts);
     }
@@ -197,6 +243,7 @@ function App() {
   }, [user, tasks, settings, booted]);
 
   const pendingTasks = useMemo(() => tasks.filter((t) => !t.completed), [tasks]);
+  const completedTasks = useMemo(() => tasks.filter((t) => t.completed), [tasks]);
   const clampProgress = (value) => Math.min(100, Math.max(0, value));
   const updateCurrentUserProgress = (delta) => {
     setUser((prevUser) => {
@@ -217,7 +264,13 @@ function App() {
     EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY
   );
   const sendValidationEmail = async ({ name, email, verificationCode }) => {
-    if (!isEmailJSConfigured) return false;
+    if (!isEmailJSConfigured) {
+      return {
+        ok: false,
+        error:
+          "EmailJS não configurado. Defina VITE_EMAILJS_SERVICE_ID, VITE_EMAILJS_TEMPLATE_ID e VITE_EMAILJS_PUBLIC_KEY no .env.",
+      };
+    }
 
     const payload = {
       service_id: EMAILJS_SERVICE_ID,
@@ -231,13 +284,26 @@ function App() {
       },
     };
 
-    const response = await fetch(EMAILJS_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    return response.ok;
+    try {
+      const response = await fetch(EMAILJS_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const responseText = await response.text();
+        return {
+          ok: false,
+          error: `EmailJS respondeu com erro (${response.status}). ${responseText || "Verifique Service ID, Template ID e Public Key."}`,
+        };
+      }
+      return { ok: true };
+    } catch {
+      return {
+        ok: false,
+        error: "Falha de rede ao enviar email. Verifique a ligação à internet.",
+      };
+    }
   };
 
   const semesterProgress = user?.semesterProgress ?? 0;
@@ -264,10 +330,7 @@ function App() {
   const isDarkMode =
     settings.theme === "Escuro" ||
     (settings.theme === "Auto" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
-  const accountToVerify = accounts.find(
-    (account) => account.email === authForm.email.toLowerCase().trim()
-  );
-  const needsVerification = authMode === "login" && accountToVerify && !accountToVerify.isVerified;
+
 
   const filteredTasks = useMemo(() => {
     const bySearch = tasks.filter((task) =>
@@ -279,22 +342,74 @@ function App() {
     return bySearch;
   }, [tasks, taskSearch, taskFilter]);
 
-  const focusTask = pendingTasks[0];
+  useEffect(() => {
+    if (pendingTasks.length === 0) {
+      setFocusTaskId(null);
+      return;
+    }
+    setFocusTaskId((current) =>
+      current && pendingTasks.some((task) => task.id === current)
+        ? current
+        : pendingTasks[0].id
+    );
+  }, [pendingTasks]);
+
+  const focusTask = pendingTasks.find((task) => task.id === focusTaskId) || pendingTasks[0];
   const mm = String(Math.floor(focusSecondsLeft / 60)).padStart(2, "0");
   const ss = String(focusSecondsLeft % 60).padStart(2, "0");
 
   const onAuthSubmit = async () => {
     const email = authForm.email.toLowerCase().trim();
-    let existingAccount = accounts.find((account) => account.email === email);
+    const existingAccount = accounts.find((account) => account.email === email);
     if (!email.includes("@")) {
       alert("Email inválido.");
       return;
     }
-    if (authForm.password.length < 8) {
+    if (!(authMode === "register" && registerAwaitingCode) && authForm.password.length < 8) {
       alert("A palavra-passe deve ter pelo menos 8 caracteres.");
       return;
     }
     if (authMode === "register") {
+      if (registerAwaitingCode) {
+        if (!existingAccount) {
+          alert("Conta não encontrada. Crie a conta novamente.");
+          setRegisterAwaitingCode(false);
+          return;
+        }
+        if (existingAccount.isVerified) {
+          alert("Este email já está validado. Faça login.");
+          setRegisterAwaitingCode(false);
+          setAuthMode("login");
+          return;
+        }
+        const enteredCode = authForm.verificationCode.trim();
+        if (!enteredCode) {
+          alert("Insira o código de validação enviado para o seu email.");
+          return;
+        }
+        if (enteredCode !== existingAccount.verificationCode) {
+          alert("Código de validação inválido.");
+          return;
+        }
+        setAccounts((prev) =>
+          prev.map((account) =>
+            account.email === existingAccount.email
+              ? { ...account, isVerified: true, verificationCode: "", verificationEmailSent: true }
+              : account
+          )
+        );
+        setRegisterAwaitingCode(false);
+        setNotification("Email validado com sucesso. Já pode fazer login.");
+        alert("Email validado com sucesso. Agora faça login.");
+        setAuthMode("login");
+        setAuthForm((prev) => ({
+          ...prev,
+          password: "",
+          confirmPassword: "",
+          verificationCode: "",
+        }));
+        return;
+      }
       if (authForm.name.trim().length < 2) {
         alert("Nome inválido.");
         return;
@@ -308,7 +423,34 @@ function App() {
         return;
       }
       if (existingAccount) {
-        alert("Esta conta já existe. Faz login.");
+        if (existingAccount.isVerified) {
+          alert("Esta conta já existe e já está validada. Faça login.");
+          return;
+        }
+
+        if (!existingAccount.verificationCode) {
+          const newCode = generateVerificationCode();
+          setAccounts((prev) =>
+            prev.map((account) =>
+              account.email === existingAccount.email
+                ? { ...account, verificationCode: newCode, verificationEmailSent: false }
+                : account
+            )
+          );
+          const emailResult = await sendValidationEmail({
+            name: existingAccount.name,
+            email: existingAccount.email,
+            verificationCode: newCode,
+          });
+          if (emailResult.ok) {
+            alert(`Conta já criada mas não validada. Enviámos um novo código para ${existingAccount.email}. Insira-o para validar.`);
+          } else {
+            alert("Conta já criada mas não validada. Não foi possível enviar o código agora. Tente reenviar.");
+          }
+        } else {
+          alert("Esta conta já existe mas ainda não está validada. Insira o código enviado para o email ou reenvie o código.");
+        }
+        setRegisterAwaitingCode(true);
         return;
       }
 
@@ -327,12 +469,12 @@ function App() {
         verificationEmailSent: false,
       };
       setAccounts((prev) => [...prev, account]);
-      const emailOk = await sendValidationEmail({
+      const emailResult = await sendValidationEmail({
         name: account.name,
         email: account.email,
         verificationCode,
       });
-      if (emailOk) {
+      if (emailResult.ok) {
         setAccounts((prev) =>
           prev.map((existing) =>
             existing.email === account.email
@@ -340,14 +482,14 @@ function App() {
               : existing
           )
         );
-        alert(`Conta criada. Um email de validação foi enviado para ${account.email}. Insira o código no ecrã de login para ativar a conta.`);
-        setNotification(`Email de validação enviado para ${account.email}.`);
+        alert(`Conta criada. Um código de validação foi enviado para ${account.email}. Insira o código para validar o email.`);
+        setNotification(`Código enviado para ${account.email}.`);
+        setRegisterAwaitingCode(true);
       } else {
-        alert("Conta criada, mas não foi possível enviar o email de validação. Use o botão 'Reenviar Código' no login para tentar novamente.");
-        setNotification("Falha ao enviar email. Tente reenviar no login.");
+        alert("Conta criada, mas não foi possível enviar o código agora. Tente reenviar.");
+        setNotification("Falha ao enviar email. Reenvie o código.");
+        setRegisterAwaitingCode(true);
       }
-      setAuthMode("login");
-      setScreen("auth");
       setAuthForm((prev) => ({
         ...prev,
         password: "",
@@ -362,25 +504,8 @@ function App() {
       return;
     }
     if (!existingAccount.isVerified) {
-      if (!authForm.verificationCode) {
-        alert("Conta criada mas ainda não verificada. Insira o código enviado para o email.");
-        return;
-      }
-      if (authForm.verificationCode !== existingAccount.verificationCode) {
-        alert("Código de verificação inválido.");
-        return;
-      }
-      const verifiedAccount = {
-        ...existingAccount,
-        isVerified: true,
-        verificationCode: null,
-        verificationEmailSent: true,
-      };
-      setAccounts((prev) =>
-        prev.map((account) => (account.email === verifiedAccount.email ? verifiedAccount : account))
-      );
-      existingAccount = verifiedAccount;
-      alert("Email verificado! Agora pode entrar na conta.");
+      alert("Email ainda não validado. Vá para 'Criar Conta' e introduza o código enviado.");
+      return;
     }
     setUser({
       name: existingAccount.name,
@@ -404,16 +529,24 @@ function App() {
       alert("Esta conta já está verificada.");
       return;
     }
-    const emailOk = await sendValidationEmail({
+    const verificationCode = account.verificationCode || generateVerificationCode();
+    if (!account.verificationCode) {
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.email === account.email ? { ...a, verificationCode, verificationEmailSent: false } : a
+        )
+      );
+    }
+    const emailResult = await sendValidationEmail({
       name: account.name,
       email: account.email,
-      verificationCode: account.verificationCode,
+      verificationCode,
     });
-    if (emailOk) {
+    if (emailResult.ok) {
       alert(`Código de validação reenviado para ${account.email}. Verifique o seu email.`);
       setNotification(`Código reenviado com sucesso.`);
     } else {
-      alert(`Não foi possível reenviar o código. Tente novamente mais tarde.`);
+      alert("Não foi possível reenviar o código. Tente novamente mais tarde.");
       setNotification("Falha ao reenviar. Tente novamente.");
     }
   };
@@ -422,6 +555,7 @@ function App() {
     setUser(null);
     setScreen("welcome");
     setAuthMode("login");
+    setRegisterAwaitingCode(false);
     setNotification("");
     setAuthForm({
       name: "",
@@ -475,12 +609,19 @@ function App() {
     setFocusRunning(false);
   };
 
+  const toggleFocusRunning = () => {
+    if (!focusRunning && focusSecondsLeft === 0) {
+      setFocusSecondsLeft(focusMinutes * 60);
+    }
+    setFocusRunning((current) => !current);
+  };
+
   if (!booted) return <div className="app-container loading">A carregar...</div>;
 
   const showBottomNav = ["dashboard", "tasks", "focus", "settings", "profile"].includes(screen);
 
   return (
-    <div className={`app-container ${isDarkMode ? "dark" : ""}`}>
+    <div className={`app-container ${isDarkMode ? "dark" : ""}`} style={{ fontSize: `${settings.textSize}px` }}>
       {screen === "welcome" && (
         <section className="screen welcome-layout">
           <header className="hero">
@@ -492,10 +633,10 @@ function App() {
             <p>Faz a gestão das tuas cadeiras e tarefas num só lugar, sem complicações.</p>
           </div>
           <div className="actions-stack">
-            <button className="btn primary" onClick={() => { setAuthMode("register"); setScreen("auth"); }}>
+            <button className="btn primary" onClick={() => { setAuthMode("register"); setRegisterAwaitingCode(false); setScreen("auth"); }}>
               Criar Conta
             </button>
-            <button className="btn ghost" onClick={() => { setAuthMode("login"); setScreen("auth"); }}>
+            <button className="btn ghost" onClick={() => { setAuthMode("login"); setRegisterAwaitingCode(false); setScreen("auth"); }}>
               Entrar
             </button>
           </div>
@@ -511,7 +652,7 @@ function App() {
             <h2>{authMode === "register" ? "Bem Vindo à SoftStudy" : "Bem Vindo de volta!"}</h2>
             <p className="muted">{authMode === "register" ? "Preencha os dados para começar" : "Faça login para continuar."}</p>
             {notification && <p className="muted info-text">{notification}</p>}
-            {authMode === "register" && (
+            {authMode === "register" && !registerAwaitingCode && (
               <input
                 className="input"
                 placeholder="Como quer ser chamado?"
@@ -525,14 +666,23 @@ function App() {
               value={authForm.email}
               onChange={(e) => setAuthForm((p) => ({ ...p, email: e.target.value }))}
             />
-            <input
-              className="input"
-              type="password"
-              placeholder="Mínimo 8 caracteres"
-              value={authForm.password}
-              onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
-            />
-            {authMode === "register" && (
+            {authMode === "register" && registerAwaitingCode ? (
+              <input
+                className="input"
+                placeholder="Código de validação (6 dígitos)"
+                value={authForm.verificationCode}
+                onChange={(e) => setAuthForm((p) => ({ ...p, verificationCode: e.target.value }))}
+              />
+            ) : (
+              <input
+                className="input"
+                type="password"
+                placeholder="Mínimo 8 caracteres"
+                value={authForm.password}
+                onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
+              />
+            )}
+            {authMode === "register" && !registerAwaitingCode && (
               <input
                 className="input"
                 type="password"
@@ -541,20 +691,8 @@ function App() {
                 onChange={(e) => setAuthForm((p) => ({ ...p, confirmPassword: e.target.value }))}
               />
             )}
-            {authMode === "login" && needsVerification && (
-              <>
-                <input
-                  className="input"
-                  placeholder="Código de validação"
-                  value={authForm.verificationCode}
-                  onChange={(e) => setAuthForm((p) => ({ ...p, verificationCode: e.target.value }))}
-                />
-                <button className="btn ghost" onClick={resendVerificationCode}>
-                  Reenviar Código
-                </button>
-              </>
-            )}
-            {authMode === "register" && (
+
+            {authMode === "register" && !registerAwaitingCode && (
               <>
                 <label className="input-label">Universidade</label>
                 <select
@@ -591,12 +729,22 @@ function App() {
           </div>
           <div className="actions-stack">
             <button className="btn primary" onClick={onAuthSubmit}>
-              {authMode === "register" ? "Criar Conta" : "Entrar"}
+              {authMode === "register"
+                ? registerAwaitingCode
+                  ? "Validar Email"
+                  : "Criar Conta"
+                : "Entrar"}
             </button>
+            {authMode === "register" && registerAwaitingCode && (
+              <button className="btn ghost" onClick={resendVerificationCode}>
+                Reenviar Código
+              </button>
+            )}
             <button
               className="link-button"
               onClick={() => {
                 setNotification("");
+                setRegisterAwaitingCode(false);
                 setAuthMode((m) => (m === "login" ? "register" : "login"));
               }}
             >
@@ -747,7 +895,7 @@ function App() {
           </div>
           <div className="grid-3">
             <button className="btn ghost" onClick={resetTimer}>Reset</button>
-            <button className="btn primary" onClick={() => setFocusRunning((v) => !v)}>{focusRunning ? "Pausar" : "Iniciar"}</button>
+            <button className="btn primary" onClick={toggleFocusRunning}>{focusRunning ? "Pausar" : "Iniciar"}</button>
             <button className="btn ghost" onClick={() => setScreen("tasks")}>Tarefas</button>
           </div>
           <div className="chips">
@@ -757,17 +905,15 @@ function App() {
               </button>
             ))}
           </div>
-          <div className="card task">
-            <small>Tarefa Atual</small>
-            <h4>{focusTask?.title || "Sem tarefa associada"}</h4>
-            <p className="muted">{focusTask?.subject || "Escolhe uma tarefa em 'Tarefas'."}</p>
-          </div>
         </section>
       )}
 
       {screen === "settings" && (
         <section className="screen scroll">
-          <h2 className="settings-title">Configurações</h2>
+          <div className="top-row">
+            <h2>Configurações</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Voltar</button>
+          </div>
           <div className="settings-group-title">NOTIFICAÇÕES</div>
           <div className="card settings-row tile">
             <div className="tile-main">
@@ -820,27 +966,37 @@ function App() {
               <span className="tile-icon">T</span>
               <div>
                 <strong>Tamanho do Texto</strong>
-                <p className="muted">Ajuste para melhor leitura</p>
               </div>
             </div>
-            <input
-              type="range"
-              min="14"
-              max="22"
-              value={settings.textSize}
-              onChange={(e) => setSettings((s) => ({ ...s, textSize: Number(e.target.value) }))}
-            />
+            <div className="settings-row" style={{ alignItems: "center", gap: "12px" }}>
+              <input
+                type="range"
+                min="14"
+                max="22"
+                value={settings.textSize}
+                aria-label="Tamanho do texto"
+                onChange={(e) => setSettings((s) => ({ ...s, textSize: Number(e.target.value) }))}
+              />
+            </div>
             <button className="btn ghost">Exemplo de texto académico</button>
           </div>
 
-          <div className="card tile">
+          <div className="card tile settings-row">
             <div className="tile-main">
               <span className="tile-icon">♿</span>
               <div>
                 <strong>Leitor de Tela</strong>
-                <p className="muted">Otimizar rótulos para TalkBack/VoiceOver</p>
               </div>
             </div>
+            <label className="switch-row" style={{ gap: "8px", alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={settings.screenReader}
+                onChange={(e) => setSettings((s) => ({ ...s, screenReader: e.target.checked }))}
+                aria-label="Ativar leitor de tela"
+              />
+              {settings.screenReader ? "Ativado" : "Desativado"}
+            </label>
           </div>
           <button className="btn ghost settings-reset" onClick={() => setSettings(initialState.settings)}>Repor Predefinições</button>
         </section>
@@ -849,7 +1005,7 @@ function App() {
       {screen === "notifications" && (
         <section className="screen scroll">
           <div className="top-row">
-            <h2>Notificações</h2>
+            <h2>{"Notifica\u00E7\u00F5es"}</h2>
             <button className="small-link" onClick={() => setScreen("dashboard")}>Fechar</button>
           </div>
           {pendingTasks.length === 0 ? (
@@ -864,6 +1020,64 @@ function App() {
                 <h4>{task.title}</h4>
                 <p className="muted">{task.subject} · {formatDateLabel(task.dueDate)} às {task.dueTime}</p>
                 <button className="btn mini primary" onClick={() => setScreen("tasks")}>Ver tarefa</button>
+              </div>
+            ))
+          )}
+        </section>
+      )}
+
+      {screen === "language" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <h2>Idioma</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Fechar</button>
+          </div>
+          <div className="card tile">
+            <div className="tile-main">
+              <span className="tile-icon">🌐</span>
+              <div>
+                <strong>Idioma da interface</strong>
+                <p className="muted">Escolhe o idioma da aplicação.</p>
+              </div>
+            </div>
+            <select
+              className="input"
+              value={settings.language}
+              onChange={(e) => setSettings((s) => ({ ...s, language: e.target.value }))}
+            >
+              <option>Português</option>
+              <option>English</option>
+              <option>Español</option>
+              <option>Français</option>
+              <option>Italiano</option>
+              <option>Deutsch</option>
+              <option>Nederlands</option>
+              <option>日本語</option>
+              <option>简体中文</option>
+              <option>한국어</option>
+            </select>
+          </div>
+          <p className="muted">A selecção de idioma é apenas para demonstrar o fluxo na interface.</p>
+        </section>
+      )}
+
+      {screen === "history" && (
+        <section className="screen scroll">
+          <div className="top-row">
+            <h2>Histórico</h2>
+            <button className="small-link" onClick={() => setScreen("profile")}>Fechar</button>
+          </div>
+          {completedTasks.length === 0 ? (
+            <div className="card task">
+              <h4>Sem histórico de tarefas</h4>
+              <p className="muted">Quando completares tarefas, elas aparecerão aqui.</p>
+            </div>
+          ) : (
+            completedTasks.slice(-10).reverse().map((task) => (
+              <div key={task.id} className="card task">
+                <small>Concluída</small>
+                <h4>{task.title}</h4>
+                <p className="muted">{task.subject} · {formatDateLabel(task.dueDate)} às {task.dueTime}</p>
               </div>
             ))
           )}
@@ -897,10 +1111,10 @@ function App() {
           </div>
           <h4>Atalhos Rápidos</h4>
           <div className="grid-2">
-            <button className="card action">🔔 Notificações</button>
-            <button className="card action">⚙️ Personalização</button>
-            <button className="card action">🌐 Idioma</button>
-            <button className="card action">🕘 Histórico</button>
+            <button className="card action" onClick={() => setScreen("notifications")}>🔔 Notificações</button>
+            <button className="card action" onClick={() => setScreen("settings")}>⚙️ Personalização</button>
+            <button className="card action" onClick={() => setScreen("language")}>🌐 Idioma</button>
+            <button className="card action" onClick={() => setScreen("history")}>🕘 Histórico</button>
           </div>
           <button className="btn primary" onClick={() => setProfileForm((prev) => ({ ...prev }))}>Editar Perfil</button>
           <button className="btn danger" onClick={logout}>Terminar Sessão</button>
