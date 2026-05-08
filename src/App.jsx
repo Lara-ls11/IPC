@@ -438,23 +438,9 @@ function App() {
   };
 
   const generateVerificationCode = () => String(Math.floor(100000 + Math.random() * 900000));
-<<<<<<< HEAD
-  const isEmailJSConfigured = Boolean(
-    EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY
-  );
-  const sendValidationEmail = async ({ name, email, verificationCode }) => {
-    if (!isEmailJSConfigured) {
-      return {
-        ok: false,
-        error:
-          "EmailJS não configurado. Defina VITE_EMAILJS_SERVICE_ID, VITE_EMAILJS_TEMPLATE_ID e VITE_EMAILJS_PUBLIC_KEY no .env.",
-      };
-    }
-=======
   const isSmtpEmailConfigured = Boolean(SMTP_EMAIL_API_URL);
   const sendValidationEmail = async ({ name, email, verificationCode, type = "validation" }) => {
     if (!isSmtpEmailConfigured) return false;
->>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
 
     const payload = {
       name,
@@ -464,28 +450,6 @@ function App() {
       type,
     };
 
-<<<<<<< HEAD
-    try {
-      const response = await fetch(EMAILJS_API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        const responseText = await response.text();
-        return {
-          ok: false,
-          error: `EmailJS respondeu com erro (${response.status}). ${responseText || "Verifique Service ID, Template ID e Public Key."}`,
-        };
-      }
-      return { ok: true };
-    } catch {
-      return {
-        ok: false,
-        error: "Falha de rede ao enviar email. Verifique a ligação à internet.",
-      };
-    }
-=======
     const response = await fetch(SMTP_EMAIL_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -493,7 +457,6 @@ function App() {
     });
 
     return response.ok;
->>>>>>> 0abb16d61f96f8c174c050485fe7443f6b5639ea
   };
 
   const semesterProgress = user?.semesterProgress ?? 0;
