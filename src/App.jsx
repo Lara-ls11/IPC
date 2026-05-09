@@ -1,15 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import softStudyLogo from "../LogoCompleto.png";
 import softStudyWordmark from "../Logosótexto.png";
 
-const STORAGE_KEY = "softstudy:web:v1";
-const ACCOUNTS_KEY = "softstudy:web:accounts:v1";
-const DEADLINE_ALERTS_SENT_KEY = "softstudy:web:deadline-alerts-sent:v1";
-const SMTP_EMAIL_API_URL =
-  import.meta.env.VITE_SMTP_EMAIL_API_URL || "http://localhost:3001/api/send-validation-email";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const AUTH_TOKEN_KEY = "softstudy:web:auth:v2";
 const SCHEDULE_IMPORT_API_URL =
-  import.meta.env.VITE_SCHEDULE_IMPORT_API_URL ||
-  SMTP_EMAIL_API_URL.replace("/api/send-validation-email", "/api/import-schedule-url");
+  import.meta.env.VITE_SCHEDULE_IMPORT_API_URL || `${API_URL}/api/import-schedule-url`;
 
 const initialState = {
   user: null,
@@ -280,16 +276,16 @@ function App() {
   const [booted, setBooted] = useState(false);
   const [screen, setScreen] = useState("welcome");
   const [authMode, setAuthMode] = useState("login");
-  const [accounts, setAccounts] = useState([]);
+  const [authToken, setAuthToken] = useState(null);
+  const [loginVerificationForEmail, setLoginVerificationForEmail] = useState(null);
+  const [passwordResetAwaitingCode, setPasswordResetAwaitingCode] = useState(false);
   const [user, setUser] = useState(initialState.user);
   const [tasks, setTasks] = useState(initialState.tasks);
   const [scheduleItems, setScheduleItems] = useState(initialState.scheduleItems);
   const [settings, setSettings] = useState(initialState.settings);
   const [now, setNow] = useState(() => Date.now());
-  const [sentDeadlineAlerts, setSentDeadlineAlerts] = useState(() => {
-    const raw = localStorage.getItem(DEADLINE_ALERTS_SENT_KEY);
-    return raw ? JSON.parse(raw) : {};
-  });
+  const [sentDeadlineAlerts, setSentDeadlineAlerts] = useState({});
+  const syncTimerRef = useRef(null);
   const [focusMinutes, setFocusMinutes] = useState(25);
   const [customFocusMinutes, setCustomFocusMinutes] = useState("25");
   const [focusSecondsLeft, setFocusSecondsLeft] = useState(25 * 60);
@@ -337,45 +333,61 @@ function App() {
   });
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const accountsRaw = localStorage.getItem(ACCOUNTS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const loadedUser = parsed.user
-        ? { ...parsed.user, semesterProgress: parsed.user.semesterProgress ?? 0 }
-        : null;
-      setUser(loadedUser);
-      setTasks(parsed.tasks ?? []);
-      setScheduleItems(parsed.scheduleItems ?? []);
-      setSettings(parsed.settings ?? initialState.settings);
-      setScreen(loadedUser ? "dashboard" : "welcome");
-    }
-    if (accountsRaw) {
-      const parsedAccounts = JSON.parse(accountsRaw).map((account) => ({
-        ...account,
-        semesterProgress: account.semesterProgress ?? 0,
-      }));
-      setAccounts(parsedAccounts);
-    }
-    setBooted(true);
+    let cancelled = false;
+    (async () => {
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (token) {
+        try {
+          const response = await fetch(`${API_URL}/api/me/data`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            if (cancelled) return;
+            setAuthToken(token);
+            setUser(data.user ? { ...data.user, semesterProgress: data.user.semesterProgress ?? 0 } : null);
+            setTasks(data.tasks ?? []);
+            setScheduleItems(data.scheduleItems ?? []);
+            setSettings({ ...initialState.settings, ...(data.settings ?? {}) });
+            setSentDeadlineAlerts(data.sentDeadlineAlerts ?? {});
+            setScreen("dashboard");
+          } else {
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+          }
+        } catch {
+          localStorage.removeItem(AUTH_TOKEN_KEY);
+        }
+      }
+      if (!cancelled) setBooted(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (!booted) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, tasks, scheduleItems, settings }));
-  }, [user, tasks, scheduleItems, settings, booted]);
-
-  useEffect(() => {
-    localStorage.setItem(DEADLINE_ALERTS_SENT_KEY, JSON.stringify(sentDeadlineAlerts));
-  }, [sentDeadlineAlerts]);
-
-  useEffect(() => {
-    setProfileForm((prev) => ({
-      ...prev,
-      name: user?.name || "",
-      email: user?.email || "",
-    }));
-  }, [user]);
+    if (!booted || !user || !authToken) return undefined;
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      fetch(`${API_URL}/api/me/data`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          tasks,
+          scheduleItems,
+          settings,
+          sentDeadlineAlerts,
+          semesterProgress: user.semesterProgress ?? 0,
+        }),
+      }).catch(() => {});
+    }, 800);
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    };
+  }, [booted, user, authToken, tasks, scheduleItems, settings, sentDeadlineAlerts]);
 
   useEffect(() => {
     document.body.style.fontSize = `${settings.textSize}px`;
@@ -394,44 +406,11 @@ function App() {
     setUser((prevUser) => {
       if (!prevUser) return prevUser;
       const nextProgress = clampProgress((prevUser.semesterProgress ?? 0) + delta);
-      const nextUser = { ...prevUser, semesterProgress: nextProgress };
-      setAccounts((prevAccounts) =>
-        prevAccounts.map((account) =>
-          account.email === nextUser.email ? { ...account, semesterProgress: nextProgress } : account
-        )
-      );
-      return nextUser;
+      return { ...prevUser, semesterProgress: nextProgress };
     });
-  };
-
-  const generateVerificationCode = () => String(Math.floor(100000 + Math.random() * 900000));
-  const isSmtpEmailConfigured = Boolean(SMTP_EMAIL_API_URL);
-  const sendValidationEmail = async ({ name, email, verificationCode, type = "validation" }) => {
-    if (!isSmtpEmailConfigured) return false;
-
-    const payload = {
-      name,
-      email,
-      verificationCode,
-      loginUrl: window.location.origin,
-      type,
-    };
-
-    const response = await fetch(SMTP_EMAIL_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    return response.ok;
   };
 
   const semesterProgress = user?.semesterProgress ?? 0;
-
-  useEffect(() => {
-    if (!booted) return;
-    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-  }, [accounts, booted]);
 
   useEffect(() => {
     if (!focusRunning) return undefined;
@@ -450,14 +429,12 @@ function App() {
   const isDarkMode =
     settings.theme === "Escuro" ||
     (settings.theme === "Auto" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
-  const accountToVerify = accounts.find(
-    (account) => account.email === authForm.email.toLowerCase().trim()
-  );
-  const needsVerification = authMode === "login" && accountToVerify && !accountToVerify.isVerified;
-  const accountToReset = accounts.find(
-    (account) => account.email === authForm.email.toLowerCase().trim()
-  );
-  const passwordResetCodeSent = authMode === "reset" && Boolean(accountToReset?.passwordResetCode);
+  const normalizedAuthEmail = authForm.email.toLowerCase().trim();
+  const needsVerification =
+    authMode === "login" &&
+    loginVerificationForEmail &&
+    loginVerificationForEmail === normalizedAuthEmail;
+  const passwordResetCodeSent = authMode === "reset" && passwordResetAwaitingCode;
 
   const filteredTasks = useMemo(() => {
     const normalizedSearch = taskSearch.toLowerCase().trim();
@@ -570,7 +547,6 @@ function App() {
 
   const onAuthSubmit = async () => {
     const email = authForm.email.toLowerCase().trim();
-    let existingAccount = accounts.find((account) => account.email === email);
     if (!email.includes("@")) {
       alert("Email inválido.");
       return;
@@ -592,45 +568,43 @@ function App() {
         alert("As palavras-passe não coincidem.");
         return;
       }
-      if (existingAccount) {
-        alert("Esta conta já existe. Faz login.");
+
+      try {
+        const response = await fetch(`${API_URL}/api/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: authForm.name.trim(),
+            email,
+            password: authForm.password,
+            university: authForm.university,
+            course: authForm.course,
+            year: authForm.year,
+            loginUrl: window.location.origin,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          alert(data.error || "Não foi possível criar a conta.");
+          return;
+        }
+        if (data.emailSent) {
+          alert(
+            `Conta criada. Um email de validação foi enviado para ${email}. Insira o código no ecrã de login para ativar a conta.`
+          );
+          setNotification(`Email de validação enviado para ${email}.`);
+        } else {
+          alert(
+            "Conta criada, mas não foi possível enviar o email de validação. Use o botão 'Reenviar Código' no login para tentar novamente."
+          );
+          setNotification("Falha ao enviar email. Tente reenviar no login.");
+        }
+      } catch {
+        alert("Não foi possível contactar o servidor. Confirme que corre npm run dev:server.");
         return;
       }
 
-      const verificationCode = generateVerificationCode();
-      const account = {
-        id: crypto.randomUUID(),
-        name: authForm.name.trim(),
-        email,
-        password: authForm.password,
-        university: authForm.university,
-        course: authForm.course,
-        year: authForm.year,
-        semesterProgress: 0,
-        isVerified: false,
-        verificationCode,
-        verificationEmailSent: false,
-      };
-      setAccounts((prev) => [...prev, account]);
-      const emailOk = await sendValidationEmail({
-        name: account.name,
-        email: account.email,
-        verificationCode,
-      });
-      if (emailOk) {
-        setAccounts((prev) =>
-          prev.map((existing) =>
-            existing.email === account.email
-              ? { ...existing, verificationEmailSent: true }
-              : existing
-          )
-        );
-        alert(`Conta criada. Um email de validação foi enviado para ${account.email}. Insira o código no ecrã de login para ativar a conta.`);
-        setNotification(`Email de validação enviado para ${account.email}.`);
-      } else {
-        alert("Conta criada, mas não foi possível enviar o email de validação. Use o botão 'Reenviar Código' no login para tentar novamente.");
-        setNotification("Falha ao enviar email. Tente reenviar no login.");
-      }
+      setLoginVerificationForEmail(null);
       setAuthMode("login");
       setScreen("auth");
       setAuthForm((prev) => ({
@@ -642,112 +616,98 @@ function App() {
       return;
     }
 
-    if (!existingAccount || existingAccount.password !== authForm.password) {
-      alert("Conta não encontrada ou palavra-passe incorreta.");
-      return;
-    }
-    if (!existingAccount.isVerified) {
-      if (!authForm.verificationCode) {
-        alert("Conta criada mas ainda não verificada. Insira o código enviado para o email.");
+    try {
+      const response = await fetch(`${API_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          password: authForm.password,
+          verificationCode: authForm.verificationCode.trim() || undefined,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 403 && data.code === "NEEDS_VERIFICATION") {
+        setLoginVerificationForEmail(email);
+        alert(data.error || "Insira o código enviado para o email.");
         return;
       }
-      if (authForm.verificationCode !== existingAccount.verificationCode) {
-        alert("Código de verificação inválido.");
+
+      if (!response.ok) {
+        setLoginVerificationForEmail(null);
+        alert(data.error || "Conta não encontrada ou palavra-passe incorreta.");
         return;
       }
-      const verifiedAccount = {
-        ...existingAccount,
-        isVerified: true,
-        verificationCode: null,
-        verificationEmailSent: true,
-      };
-      setAccounts((prev) =>
-        prev.map((account) => (account.email === verifiedAccount.email ? verifiedAccount : account))
+
+      setLoginVerificationForEmail(null);
+      localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+      setAuthToken(data.token);
+      setUser(
+        data.user
+          ? {
+              ...data.user,
+              semesterProgress: data.user.semesterProgress ?? 0,
+            }
+          : null
       );
-      existingAccount = verifiedAccount;
-      alert("Email verificado! Agora pode entrar na conta.");
+      setTasks(data.tasks ?? []);
+      setScheduleItems(data.scheduleItems ?? []);
+      setSettings({ ...initialState.settings, ...(data.settings ?? {}) });
+      setSentDeadlineAlerts(data.sentDeadlineAlerts ?? {});
+      setScreen("dashboard");
+    } catch {
+      alert("Não foi possível contactar o servidor. Confirme que corre npm run dev:server.");
     }
-    setUser({
-      name: existingAccount.name,
-      email: existingAccount.email,
-      semesterProgress: existingAccount.semesterProgress ?? 0,
-      university: existingAccount.university,
-      course: existingAccount.course,
-      year: existingAccount.year,
-    });
-    setScreen("dashboard");
   };
 
   const resendVerificationCode = async () => {
     const email = authForm.email.toLowerCase().trim();
-    const account = accounts.find((a) => a.email === email);
-    if (!account) {
-      alert("Conta não encontrada.");
-      return;
-    }
-    if (account.isVerified) {
-      alert("Esta conta já está verificada.");
-      return;
-    }
-    const emailOk = await sendValidationEmail({
-      name: account.name,
-      email: account.email,
-      verificationCode: account.verificationCode,
-    });
-    if (emailOk) {
-      alert(`Código de validação reenviado para ${account.email}. Verifique o seu email.`);
-      setNotification(`Código reenviado com sucesso.`);
-    } else {
-      alert(`Não foi possível reenviar o código. Tente novamente mais tarde.`);
-      setNotification("Falha ao reenviar. Tente novamente.");
+    try {
+      const response = await fetch(`${API_URL}/api/auth/resend-verification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, loginUrl: window.location.origin }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Não foi possível reenviar o código.");
+        return;
+      }
+      alert(`Código de validação reenviado para ${email}. Verifique o seu email.`);
+      setNotification("Código reenviado com sucesso.");
+    } catch {
+      alert("Não foi possível contactar o servidor.");
     }
   };
 
   const requestPasswordReset = async () => {
     const email = authForm.email.toLowerCase().trim();
-    const account = accounts.find((a) => a.email === email);
     if (!email.includes("@")) {
       alert("Email inválido.");
       return;
     }
-    if (!account) {
-      alert("Conta não encontrada.");
-      return;
-    }
-
-    const passwordResetCode = generateVerificationCode();
-    const emailOk = await sendValidationEmail({
-      name: account.name,
-      email: account.email,
-      verificationCode: passwordResetCode,
-      type: "password-reset",
-    });
-
-    if (emailOk) {
-      setAccounts((prev) =>
-        prev.map((existing) =>
-          existing.email === account.email ? { ...existing, passwordResetCode } : existing
-        )
-      );
-      alert(`Código de recuperação enviado para ${account.email}.`);
-      setNotification(`Código de recuperação enviado para ${account.email}.`);
-    } else {
-      alert("Não foi possível enviar o email de recuperação. Tente novamente mais tarde.");
-      setNotification("Falha ao enviar email de recuperação.");
+    try {
+      const response = await fetch(`${API_URL}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, loginUrl: window.location.origin }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Não foi possível enviar o código.");
+        return;
+      }
+      setPasswordResetAwaitingCode(true);
+      alert(`Código de recuperação enviado para ${email}.`);
+      setNotification(`Código de recuperação enviado para ${email}.`);
+    } catch {
+      alert("Não foi possível contactar o servidor.");
     }
   };
 
-  const confirmPasswordReset = () => {
+  const confirmPasswordReset = async () => {
     const email = authForm.email.toLowerCase().trim();
-    const account = accounts.find((a) => a.email === email);
-    if (!account) {
-      alert("Conta não encontrada.");
-      return;
-    }
-    if (!authForm.verificationCode || authForm.verificationCode !== account.passwordResetCode) {
-      alert("Código de recuperação inválido.");
-      return;
-    }
     if (authForm.password.length < 8) {
       alert("A nova palavra-passe deve ter pelo menos 8 caracteres.");
       return;
@@ -756,26 +716,45 @@ function App() {
       alert("As palavras-passe não coincidem.");
       return;
     }
-
-    setAccounts((prev) =>
-      prev.map((existing) =>
-        existing.email === account.email
-          ? { ...existing, password: authForm.password, passwordResetCode: null }
-          : existing
-      )
-    );
-    setAuthMode("login");
-    setNotification("Palavra-passe alterada com sucesso. Já pode entrar.");
-    setAuthForm((prev) => ({
-      ...prev,
-      password: "",
-      confirmPassword: "",
-      verificationCode: "",
-    }));
+    try {
+      const response = await fetch(`${API_URL}/api/auth/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          code: authForm.verificationCode.trim(),
+          newPassword: authForm.password,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Não foi possível alterar a palavra-passe.");
+        return;
+      }
+      setPasswordResetAwaitingCode(false);
+      setAuthMode("login");
+      setNotification("Palavra-passe alterada com sucesso. Já pode entrar.");
+      setAuthForm((prev) => ({
+        ...prev,
+        password: "",
+        confirmPassword: "",
+        verificationCode: "",
+      }));
+    } catch {
+      alert("Não foi possível contactar o servidor.");
+    }
   };
 
   const logout = () => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthToken(null);
     setUser(null);
+    setTasks(initialState.tasks);
+    setScheduleItems(initialState.scheduleItems);
+    setSettings(initialState.settings);
+    setSentDeadlineAlerts({});
+    setLoginVerificationForEmail(null);
+    setPasswordResetAwaitingCode(false);
     setScreen("welcome");
     setAuthMode("login");
     setNotification("");
@@ -965,10 +944,26 @@ function App() {
             <p>Faz a gestão das tuas cadeiras e tarefas num só lugar, sem complicações.</p>
           </div>
           <div className="actions-stack">
-            <button className="btn primary" onClick={() => { setAuthMode("register"); setScreen("auth"); }}>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setLoginVerificationForEmail(null);
+                setPasswordResetAwaitingCode(false);
+                setAuthMode("register");
+                setScreen("auth");
+              }}
+            >
               Criar Conta
             </button>
-            <button className="btn ghost" onClick={() => { setAuthMode("login"); setScreen("auth"); }}>
+            <button
+              className="btn ghost"
+              onClick={() => {
+                setLoginVerificationForEmail(null);
+                setPasswordResetAwaitingCode(false);
+                setAuthMode("login");
+                setScreen("auth");
+              }}
+            >
               Entrar
             </button>
           </div>
@@ -1106,6 +1101,8 @@ function App() {
                 className="link-button"
                 onClick={() => {
                   setNotification("");
+                  setLoginVerificationForEmail(null);
+                  setPasswordResetAwaitingCode(false);
                   setAuthMode("reset");
                   setAuthForm((prev) => ({
                     ...prev,
@@ -1122,6 +1119,8 @@ function App() {
               className="link-button"
               onClick={() => {
                 setNotification("");
+                setLoginVerificationForEmail(null);
+                setPasswordResetAwaitingCode(false);
                 setAuthMode((m) => (m === "login" ? "register" : "login"));
                 setAuthForm((prev) => ({
                   ...prev,
@@ -1648,7 +1647,19 @@ function App() {
             <button className="card action" onClick={() => setScreen("language")}>🌐 Idioma</button>
             <button className="card action" onClick={() => setScreen("history")}>🕘 Histórico</button>
           </div>
-          <button className="btn primary" onClick={() => setScreen("editProfile")}>Editar Perfil</button>
+          <button
+            className="btn primary"
+            onClick={() => {
+              setProfileForm((prev) => ({
+                ...prev,
+                name: user?.name || "",
+                email: user?.email || "",
+              }));
+              setScreen("editProfile");
+            }}
+          >
+            Editar Perfil
+          </button>
           <button className="btn danger" onClick={logout}>Terminar Sessão</button>
         </section>
       )}
@@ -1682,15 +1693,36 @@ function App() {
               <option value="Ciência de Dados - 2º Ano">Ciência de Dados - 2º Ano</option>
               <option value="Engenharia de Telecomunicações - 1º Ano">Engenharia de Telecomunicações - 1º Ano</option>
             </select>
-            <button className="btn primary" onClick={() => {
-              // Atualizar user com os novos valores
-              setUser((prev) => ({
-                ...prev,
-                name: profileForm.name || prev.name,
-                email: profileForm.email || prev.email,
-              }));
-              setScreen("profile");
-            }}>Guardar Alterações</button>
+            <button
+              className="btn primary"
+              onClick={async () => {
+                if (!authToken) return;
+                try {
+                  const response = await fetch(`${API_URL}/api/me/profile`, {
+                    method: "PATCH",
+                    headers: {
+                      "Content-Type": "application/json",
+                      Authorization: `Bearer ${authToken}`,
+                    },
+                    body: JSON.stringify({
+                      name: (profileForm.name || user?.name || "").trim(),
+                      email: (profileForm.email || user?.email || "").trim().toLowerCase(),
+                    }),
+                  });
+                  const data = await response.json().catch(() => ({}));
+                  if (!response.ok) {
+                    alert(data.error || "Não foi possível guardar o perfil.");
+                    return;
+                  }
+                  setUser((prev) => ({ ...prev, ...data.user, semesterProgress: data.user?.semesterProgress ?? prev?.semesterProgress ?? 0 }));
+                  setScreen("profile");
+                } catch {
+                  alert("Não foi possível contactar o servidor.");
+                }
+              }}
+            >
+              Guardar Alterações
+            </button>
           </div>
         </section>
       )}
