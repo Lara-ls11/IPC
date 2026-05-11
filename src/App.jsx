@@ -698,7 +698,7 @@ function App() {
             email: existingAccount.email,
             verificationCode: newCode,
           });
-          if (emailResult.ok) {
+          if (emailResult) {
             alert(`Conta já criada mas não validada. Enviámos um novo código para ${existingAccount.email}. Insira-o para validar.`);
           } else {
             alert("Conta já criada mas não validada. Não foi possível enviar o código agora. Tente reenviar.");
@@ -730,7 +730,7 @@ function App() {
         email: account.email,
         verificationCode,
       });
-      if (emailResult.ok) {
+      if (emailResult) {
         setAccounts((prev) =>
           prev.map((existing) =>
             existing.email === account.email
@@ -798,7 +798,7 @@ function App() {
       email: account.email,
       verificationCode,
     });
-    if (emailResult.ok) {
+    if (emailResult) {
       alert(`Código de validação reenviado para ${account.email}. Verifique o seu email.`);
       setNotification(`Código reenviado com sucesso.`);
     } else {
@@ -1205,12 +1205,9 @@ function App() {
             )}
           </div>
           <div className="actions-stack">
-<<<<<<< HEAD
-            <button className="btn primary" onClick={onAuthSubmit}>
-              {authMode === "register"
-                ? registerAwaitingCode
             <button
               className="btn primary"
+              type="button"
               onClick={
                 authMode === "reset"
                   ? passwordResetCodeSent
@@ -1220,7 +1217,9 @@ function App() {
               }
             >
               {authMode === "register"
-                ? "Criar Conta"
+                ? registerAwaitingCode
+                  ? "Validar email"
+                  : "Criar Conta"
                 : authMode === "reset"
                   ? passwordResetCodeSent
                     ? "Alterar Palavra-passe"
@@ -1230,6 +1229,7 @@ function App() {
             {authMode === "login" && (
               <button
                 className="link-button"
+                type="button"
                 onClick={() => {
                   setNotification("");
                   setAuthMode("reset");
@@ -1242,6 +1242,11 @@ function App() {
                 }}
               >
                 Esqueceu-se da palavra-passe?
+              </button>
+            )}
+            <button
+              className="link-button"
+              type="button"
               onClick={() => {
                 setNotification("");
                 setRegisterAwaitingCode(false);
