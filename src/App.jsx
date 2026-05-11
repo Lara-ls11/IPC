@@ -605,51 +605,13 @@ function App() {
       alert("Email inválido.");
       return;
     }
-    if (!(authMode === "register" && registerAwaitingCode) && authForm.password.length < 8) {
+    const skipPasswordLengthCheck =
+      authMode === "reset" && !passwordResetAwaitingCode;
+    if (!skipPasswordLengthCheck && authForm.password.length < 8) {
       alert("A palavra-passe deve ter pelo menos 8 caracteres.");
       return;
     }
     if (authMode === "register") {
-      if (registerAwaitingCode) {
-        if (!existingAccount) {
-          alert("Conta não encontrada. Crie a conta novamente.");
-          setRegisterAwaitingCode(false);
-          return;
-        }
-        if (existingAccount.isVerified) {
-          alert("Este email já está validado. Faça login.");
-          setRegisterAwaitingCode(false);
-          setAuthMode("login");
-          return;
-        }
-        const enteredCode = authForm.verificationCode.trim();
-        if (!enteredCode) {
-          alert("Insira o código de validação enviado para o seu email.");
-          return;
-        }
-        if (enteredCode !== existingAccount.verificationCode) {
-          alert("Código de validação inválido.");
-          return;
-        }
-        setAccounts((prev) =>
-          prev.map((account) =>
-            account.email === existingAccount.email
-              ? { ...account, isVerified: true, verificationCode: "", verificationEmailSent: true }
-              : account
-          )
-        );
-        setRegisterAwaitingCode(false);
-        setNotification("Email validado com sucesso. Já pode fazer login.");
-        alert("Email validado com sucesso. Agora faça login.");
-        setAuthMode("login");
-        setAuthForm((prev) => ({
-          ...prev,
-          password: "",
-          confirmPassword: "",
-          verificationCode: "",
-        }));
-        return;
-      }
       if (authForm.name.trim().length < 2) {
         alert("Nome inválido.");
         return;
@@ -851,7 +813,6 @@ function App() {
     setPasswordResetAwaitingCode(false);
     setScreen("welcome");
     setAuthMode("login");
-    setRegisterAwaitingCode(false);
     setNotification("");
     setAuthForm({
       name: "",
@@ -1093,7 +1054,7 @@ function App() {
                   : "Faça login para continuar."}
             </p>
             {notification && <p className="muted info-text">{notification}</p>}
-            {authMode === "register" && !registerAwaitingCode && (
+            {authMode === "register" && (
               <input
                 className="input"
                 placeholder="Como quer ser chamado?"
@@ -1111,16 +1072,11 @@ function App() {
               <input
                 className="input"
                 type="password"
-                placeholder="Mínimo 8 caracteres"
-                value={authForm.password}
-                onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
-              />
-            )}
-            {authMode === "register" && (
-              <input
-                className="input"
-                type="password"
-                placeholder={authMode === "reset" ? "Nova palavra-passe" : "Mínimo 8 caracteres"}
+                placeholder={
+                  authMode === "reset" && passwordResetCodeSent
+                    ? "Nova palavra-passe"
+                    : "Mínimo 8 caracteres"
+                }
                 value={authForm.password}
                 onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
               />
@@ -1202,9 +1158,7 @@ function App() {
               }
             >
               {authMode === "register"
-                ? registerAwaitingCode
-                  ? "Validar email"
-                  : "Criar Conta"
+                ? "Criar Conta"
                 : authMode === "reset"
                   ? passwordResetCodeSent
                     ? "Alterar Palavra-passe"
